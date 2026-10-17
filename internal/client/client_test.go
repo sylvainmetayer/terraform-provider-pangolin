@@ -4409,3 +4409,132 @@ func extractParam(rawQuery, key string) string {
 	}
 	return ""
 }
+
+// --- UpdateSiteResource keeps the grants (roleIds / userIds / clientIds) ---
+
+func TestUpdateSiteResource_OmitsGrantLists(t *testing.T) {
+	// Since 1.20 a missing list means "unchanged"; an empty one would
+	// remove every user, client and non-admin role grant.
+	var gotBody map[string]json.RawMessage
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/site-resource/11" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11, "name": "db"})
+	})
+	got, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, Destination: "10.0.0.5", Alias: "db.internal",
+	})
+	if err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	if got.Name != "db" || calls != 1 {
+		t.Errorf("got %+v after %d calls", got, calls)
+	}
+	for _, k := range []string{"roleIds", "userIds", "clientIds"} {
+		if v, present := gotBody[k]; present {
+			t.Errorf("%s must be omitted, got %s", k, v)
+		}
+	}
+	if string(gotBody["name"]) != `"db"` || string(gotBody["destination"]) != `"10.0.0.5"` {
+		t.Errorf("scalars lost: %v", gotBody)
+	}
+}
+
+func TestUpdateSiteResource_SendsNonEmptyGrantLists(t *testing.T) {
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11})
+	})
+	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, RoleIDs: []int{3}, UserIDs: []string{"u1"}, ClientIDs: []int{7},
+	}); err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	want := map[string]string{"roleIds": "[3]", "userIds": `["u1"]`, "clientIds": "[7]"}
+	for k, v := range want {
+		if string(gotBody[k]) != v {
+			t.Errorf("%s = %s, want %s", k, gotBody[k], v)
+		}
+	}
+}
+
+// writeAPIError renders a Pangolin error envelope with a message.
+func writeAPIError(t *testing.T, w http.ResponseWriter, status int, message string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	raw, err := json.Marshal(map[string]any{
+		"data": nil, "success": false, "error": true, "message": message, "status": status,
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, _ = w.Write(raw)
+}
+
+func TestUpdateSiteResource_RetriesWithGrantListsOnPre120Server(t *testing.T) {
+	// Pangolin <= 1.19 requires the three lists in the update body.
+	var bodies []map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		bodies = append(bodies, body)
+		if _, ok := body["roleIds"]; !ok {
+			writeAPIError(t, w, http.StatusBadRequest,
+				`Validation error: Invalid input: expected array, received undefined at "userIds"; Invalid input: expected array, received undefined at "roleIds"; Invalid input: expected array, received undefined at "clientIds"`)
+			return
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11, "name": "db"})
+	})
+	got, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, Destination: "10.0.0.5",
+	})
+	if err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	if len(bodies) != 2 || got.Name != "db" {
+		t.Fatalf("calls = %d, got %+v", len(bodies), got)
+	}
+	retry := bodies[1]
+	for _, k := range []string{"roleIds", "userIds", "clientIds"} {
+		if string(retry[k]) != "[]" {
+			t.Errorf("retry %s = %s, want []", k, retry[k])
+		}
+	}
+	if string(retry["name"]) != `"db"` || string(retry["destination"]) != `"10.0.0.5"` || string(retry["siteId"]) != "5" {
+		t.Errorf("retry lost the scalars: %v", retry)
+	}
+}
+
+func TestUpdateSiteResource_NoRetryOnOtherErrors(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		message string
+	}{
+		{http.StatusBadRequest, "Destination must be a valid IP address or valid domain AND alias is required"},
+		{http.StatusConflict, `Alias already in use by another site resource ("roleIds" unrelated)`},
+	} {
+		calls := 0
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			writeAPIError(t, w, tc.status, tc.message)
+		})
+		if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{Name: "db", SiteID: 5}); err == nil {
+			t.Errorf("status %d: expected an error", tc.status)
+		}
+		if calls != 1 {
+			t.Errorf("status %d: %d calls, want 1", tc.status, calls)
+		}
+	}
+}

@@ -359,9 +359,8 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 		Subdomain:       plan.Subdomain.ValueString(),
 		Scheme:          plan.Scheme.ValueString(),
 		DestinationPort: int(plan.DestinationPort.ValueInt64()),
-		RoleIDs:         []int{},
-		UserIDs:         []string{},
-		ClientIDs:       []int{},
+		// RoleIDs / UserIDs / ClientIDs left nil: the grants belong to
+		// the pangolin_site_resource_role / _user / _client resources.
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site resource", err.Error())

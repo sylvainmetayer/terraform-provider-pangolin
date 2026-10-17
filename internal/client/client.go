@@ -1462,6 +1462,13 @@ func (c *Client) UpdateResource(ctx context.Context, resourceID int, req *Update
 }
 
 // UpdateSiteResourceRequest is the payload for updating a private site resource.
+//
+// `RoleIDs`, `UserIDs` and `ClientIDs` are omitted when empty. Since
+// Pangolin 1.20 the update endpoint treats a missing list as "leave the
+// grants unchanged", whereas an empty list removes every grant (all
+// users and clients, every role but the admin one). The grants are
+// managed by `pangolin_site_resource_role` / `_user` / `_client` or in
+// the UI, so an update of the resource itself must not touch them.
 type UpdateSiteResourceRequest struct {
 	Name           string   `json:"name"`
 	SiteID         int      `json:"siteId"`
@@ -1472,9 +1479,9 @@ type UpdateSiteResourceRequest struct {
 	DisableICMP    bool     `json:"disableIcmp,omitempty"`
 	AuthDaemonMode string   `json:"authDaemonMode,omitempty"`
 	PamMode        string   `json:"pamMode,omitempty"`
-	RoleIDs        []int    `json:"roleIds"`
-	UserIDs        []string `json:"userIds"`
-	ClientIDs      []int    `json:"clientIds"`
+	RoleIDs        []int    `json:"roleIds,omitempty"`
+	UserIDs        []string `json:"userIds,omitempty"`
+	ClientIDs      []int    `json:"clientIds,omitempty"`
 
 	// HTTP-mode-only fields. Required when the underlying resource
 	// is in `http` mode; ignored for `cidr` / `host`.
@@ -1484,9 +1491,49 @@ type UpdateSiteResourceRequest struct {
 	DestinationPort int    `json:"destinationPort,omitempty"`
 }
 
+// legacyUpdateSiteResourceBody re-adds the grant lists as explicit
+// arrays, for servers older than 1.20 whose update schema requires them.
+// The outer fields shadow the embedded omitempty ones.
+type legacyUpdateSiteResourceBody struct {
+	*UpdateSiteResourceRequest
+	RoleIDs   []int    `json:"roleIds"`
+	UserIDs   []string `json:"userIds"`
+	ClientIDs []int    `json:"clientIds"`
+}
+
+// isMissingGrantListsError reports whether err is a pre-1.20 server
+// refusing an update body without `roleIds` / `userIds` / `clientIds`.
+func isMissingGrantListsError(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "(status 400)") {
+		return false
+	}
+	for _, k := range []string{`"roleIds"`, `"userIds"`, `"clientIds"`} {
+		if strings.Contains(msg, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdateSiteResource updates a private site resource by ID.
+//
+// A server older than 1.20 refuses a body without the grant lists; the
+// update is then retried once with explicit lists (empty unless the
+// caller set them), which on those servers resets the grants as every
+// provider release did so far.
 func (c *Client) UpdateSiteResource(ctx context.Context, siteResourceID int, req *UpdateSiteResourceRequest) (*SiteResource, error) {
-	resp, err := c.doRequest(ctx, "POST", fmt.Sprintf("/site-resource/%d", siteResourceID), req)
+	path := fmt.Sprintf("/site-resource/%d", siteResourceID)
+	resp, err := c.doRequest(ctx, "POST", path, req)
+	if err != nil && isMissingGrantListsError(err) {
+		legacy := legacyUpdateSiteResourceBody{
+			UpdateSiteResourceRequest: req,
+			RoleIDs:                   append([]int{}, req.RoleIDs...),
+			UserIDs:                   append([]string{}, req.UserIDs...),
+			ClientIDs:                 append([]int{}, req.ClientIDs...),
+		}
+		resp, err = c.doRequest(ctx, "POST", path, legacy)
+	}
 	if err != nil {
 		return nil, err
 	}
