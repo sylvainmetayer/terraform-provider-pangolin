@@ -987,6 +987,11 @@ type SiteResource struct {
 //     scheme (http or https) and a valid destination port". `Alias`
 //     is null in this mode; `TCPPortRange` / `UDPPortRange` are
 //     auto-filled by the server (`"443,80"` and `""` respectively).
+//   - `gateway` (1.24+, "exit node" in the UI): needs nothing but the
+//     site. The server forces `destination = "0.0.0.0/0"`,
+//     `tcpPortRangeString = udpPortRangeString = "*"` and
+//     `disableIcmp = false`, whatever the body says. `Destination` is
+//     left empty, hence omitted: the body schema refuses `""`.
 //
 // `proxyPort` is NOT a valid create input despite appearing on the
 // wire response - the server fills it itself (`null` in every
@@ -995,7 +1000,7 @@ type CreateSiteResourceRequest struct {
 	Name           string   `json:"name"`
 	SiteID         int      `json:"siteId"`
 	Mode           string   `json:"mode"`
-	Destination    string   `json:"destination"`
+	Destination    string   `json:"destination,omitempty"`
 	Alias          string   `json:"alias,omitempty"`
 	TCPPortRange   string   `json:"tcpPortRangeString,omitempty"`
 	UDPPortRange   string   `json:"udpPortRangeString,omitempty"`
@@ -1462,10 +1467,16 @@ func (c *Client) UpdateResource(ctx context.Context, resourceID int, req *Update
 }
 
 // UpdateSiteResourceRequest is the payload for updating a private site resource.
+//
+// `Mode` is only sent for `gateway` resources: the server re-applies
+// its forced gateway values (destination, port ranges, ICMP) only
+// when the body names the mode, and `Destination` stays empty
+// (omitted) for them. Mode itself is immutable in the provider.
 type UpdateSiteResourceRequest struct {
 	Name           string   `json:"name"`
 	SiteID         int      `json:"siteId"`
-	Destination    string   `json:"destination"`
+	Mode           string   `json:"mode,omitempty"`
+	Destination    string   `json:"destination,omitempty"`
 	Alias          string   `json:"alias,omitempty"`
 	TCPPortRange   string   `json:"tcpPortRangeString,omitempty"`
 	UDPPortRange   string   `json:"udpPortRangeString,omitempty"`

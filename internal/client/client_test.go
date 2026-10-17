@@ -4409,3 +4409,64 @@ func extractParam(rawQuery, key string) string {
 	}
 	return ""
 }
+
+func TestCreateSiteResource_GatewayModeBodyShape(t *testing.T) {
+	// Gateway mode (1.24+): no destination at all - the body schema is
+	// `destination: z.string().min(1).nullish()`, so an empty string
+	// would be refused. The server answers with its forced values.
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/org/test-org/site-resource" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusCreated, map[string]any{
+			"siteResourceId": 11, "mode": "gateway", "destination": "0.0.0.0/0",
+			"tcpPortRangeString": "*", "udpPortRangeString": "*", "disableIcmp": false,
+		})
+	})
+
+	got, err := c.CreateSiteResource(context.Background(), &CreateSiteResourceRequest{
+		Name: "exit", SiteID: 5, Mode: "gateway",
+		RoleIDs: []int{}, UserIDs: []string{}, ClientIDs: []int{},
+	})
+	if err != nil {
+		t.Fatalf("CreateSiteResource: %v", err)
+	}
+	if _, present := gotBody["destination"]; present {
+		t.Errorf("destination must be omitted, got %s", gotBody["destination"])
+	}
+	if string(gotBody["mode"]) != `"gateway"` {
+		t.Errorf("mode = %s", gotBody["mode"])
+	}
+	if got.Destination != "0.0.0.0/0" || got.TCPPortRange != "*" || got.UDPPortRange != "*" {
+		t.Errorf("response = %+v", got)
+	}
+}
+
+func TestUpdateSiteResource_GatewayModeSendsMode(t *testing.T) {
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/site-resource/11" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11, "mode": "gateway"})
+	})
+	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "exit", SiteID: 5, Mode: "gateway",
+		RoleIDs: []int{}, UserIDs: []string{}, ClientIDs: []int{},
+	}); err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	if string(gotBody["mode"]) != `"gateway"` {
+		t.Errorf("mode = %s", gotBody["mode"])
+	}
+	if _, present := gotBody["destination"]; present {
+		t.Errorf("destination must be omitted, got %s", gotBody["destination"])
+	}
+}

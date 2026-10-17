@@ -71,7 +71,7 @@ func (d *SiteResourcesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 						"nice_id":            schema.StringAttribute{Description: "The human-readable ID.", Computed: true},
 						"site_id":            schema.Int64Attribute{Description: "The parent site ID (first entry of the upstream `siteIds` array).", Computed: true},
 						"name":               schema.StringAttribute{Description: "The resource name.", Computed: true},
-						"mode":               schema.StringAttribute{Description: "The mode (host or cidr).", Computed: true},
+						"mode":               schema.StringAttribute{Description: "The mode: `host`, `cidr`, `http` or `gateway`.", Computed: true},
 						"destination":        schema.StringAttribute{Description: "The destination.", Computed: true},
 						"alias":              schema.StringAttribute{Description: "The internal DNS alias.", Computed: true},
 						"tcp_port_range":     schema.StringAttribute{Description: "TCP port range.", Computed: true},

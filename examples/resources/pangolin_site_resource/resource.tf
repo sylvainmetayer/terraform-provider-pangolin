@@ -35,3 +35,12 @@ resource "pangolin_site_resource" "ssh_bastion" {
   tcp_port_range = "22"
   pam_mode       = "push"
 }
+
+# Exit node (gateway mode, Pangolin 1.24+) - routes all client traffic
+# through the site. The server forces destination = "0.0.0.0/0", both
+# port ranges to "*" and disable_icmp = false, so leave them unset.
+resource "pangolin_site_resource" "exit_node" {
+  site_id = pangolin_site.example.id
+  name    = "exit-node"
+  mode    = "gateway"
+}

@@ -44,7 +44,7 @@ Read-Only:
 - `enabled` (Boolean) Whether the resource is enabled.
 - `full_domain` (String) The full FQDN of the resource. Null when unset.
 - `id` (Number) The numeric site resource ID.
-- `mode` (String) The mode (host or cidr).
+- `mode` (String) The mode: `host`, `cidr`, `http` or `gateway`.
 - `name` (String) The resource name.
 - `network_id` (Number) The numeric network ID.
 - `nice_id` (String) The human-readable ID.
