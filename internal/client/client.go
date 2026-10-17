@@ -447,11 +447,47 @@ func (c *Client) ListDomains(ctx context.Context) ([]Domain, error) {
 
 // --- Resources (HTTP public) ---
 
-// ResourceHeader is one `{name, value}` request-header injection
-// entry on a resource. Present on the wire on 1.19+.
+// ResourceHeader is one `{name, value}` header injection entry on a
+// resource. Present on the wire on 1.19+.
 type ResourceHeader struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+// ResourceHeaders is a resource header list as found in responses.
+//
+// Wire quirk (same family as Target.hcHeaders): the server stores the
+// list as a JSON-encoded string column. GET /resource/{id} parses it
+// back into a native array, but the create / update responses return
+// the raw row, so the same field arrives as a *string* there (e.g.
+// `"[{\"name\":\"X-Env\",\"value\":\"prod\"}]"`). Both shapes, as well
+// as null and the empty string, decode into the same typed slice.
+type ResourceHeaders []ResourceHeader
+
+// UnmarshalJSON accepts a native array, a JSON-encoded string holding
+// that array, an empty string or null.
+func (h *ResourceHeaders) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*h = nil
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return fmt.Errorf("decode resource headers string: %w", err)
+		}
+		if s == "" || s == "null" {
+			*h = nil
+			return nil
+		}
+		data = []byte(s)
+	}
+	var out []ResourceHeader
+	if err := json.Unmarshal(data, &out); err != nil {
+		return fmt.Errorf("decode resource headers: %w", err)
+	}
+	*h = out
+	return nil
 }
 
 // Resource represents a Pangolin HTTP resource.
@@ -495,11 +531,28 @@ type Resource struct {
 	TLSServerName         *string `json:"tlsServerName"`
 
 	// 1.19 additions - routing / auth
-	SetHostHeader *string          `json:"setHostHeader,omitempty"`
-	EnableProxy   *bool            `json:"enableProxy,omitempty"`
-	Headers       []ResourceHeader `json:"headers,omitempty"`
-	SkipToIdpID   *int             `json:"skipToIdpId,omitempty"`
-	PostAuthPath  *string          `json:"postAuthPath,omitempty"`
+	SetHostHeader *string `json:"setHostHeader,omitempty"`
+	EnableProxy   *bool   `json:"enableProxy,omitempty"`
+	SkipToIdpID   *int    `json:"skipToIdpId,omitempty"`
+	PostAuthPath  *string `json:"postAuthPath,omitempty"`
+
+	// Injected request headers. Up to 1.23 the server column (and the
+	// response key) is `headers`; 1.24 renamed it `requestHeaders`
+	// and keeps `headers` only as a write-side alias, so a 1.24
+	// response never carries `headers`. Use EffectiveRequestHeaders
+	// rather than reading either field directly.
+	Headers        ResourceHeaders `json:"headers,omitempty"`
+	RequestHeaders ResourceHeaders `json:"requestHeaders,omitempty"`
+
+	// Headers added to the response sent back to the client (1.24+).
+	ResponseHeaders ResourceHeaders `json:"responseHeaders,omitempty"`
+
+	// HasRequestHeadersKey reports whether the response carried the
+	// `requestHeaders` key at all, even as null. It is the 1.24+
+	// feature probe: every resource response of a 1.24 server has it
+	// (GET sets it explicitly, create / update return the full row,
+	// whose column it is), no pre-1.24 response does. Not on the wire.
+	HasRequestHeadersKey bool `json:"-"`
 
 	// 1.19 additions - proxy-protocol
 	ProxyProtocol        *bool `json:"proxyProtocol,omitempty"`
@@ -521,6 +574,16 @@ type Resource struct {
 	DefaultResourcePolicyID *int `json:"defaultResourcePolicyId,omitempty"`
 }
 
+// EffectiveRequestHeaders returns the request headers injected on the
+// upstream request, whichever key the server version used: the 1.24+
+// `requestHeaders` when present, the pre-1.24 `headers` otherwise.
+func (r *Resource) EffectiveRequestHeaders() []ResourceHeader {
+	if r.RequestHeaders != nil {
+		return r.RequestHeaders
+	}
+	return r.Headers
+}
+
 // UnmarshalJSON tolerates the Pangolin 1.19+ wire quirk where `sso`
 // is emitted as a JSON number (0/1) on some server builds instead of
 // a plain bool. Same 1.19 tag on the release; the sub-build patch
@@ -529,14 +592,25 @@ type Resource struct {
 //
 // Zero → false, non-zero → true. Older builds emit bool directly and
 // pass through unchanged.
+//
+// It also records whether `requestHeaders` was present (see
+// HasRequestHeadersKey), which a plain decode cannot tell from null.
 func (r *Resource) UnmarshalJSON(data []byte) error {
 	type resourceAlias Resource
 	aux := struct {
-		SSO json.RawMessage `json:"sso"`
+		SSO            json.RawMessage `json:"sso"`
+		RequestHeaders json.RawMessage `json:"requestHeaders"`
 		*resourceAlias
 	}{resourceAlias: (*resourceAlias)(r)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+	r.HasRequestHeadersKey = aux.RequestHeaders != nil
+	r.RequestHeaders = nil
+	if r.HasRequestHeadersKey {
+		if err := r.RequestHeaders.UnmarshalJSON(aux.RequestHeaders); err != nil {
+			return err
+		}
 	}
 	if len(aux.SSO) == 0 || string(aux.SSO) == "null" {
 		return nil
@@ -1410,8 +1484,10 @@ func (c *Client) UpdateSite(ctx context.Context, siteID int, req *UpdateSiteRequ
 
 // UpdateResourceRequest is the payload for updating a Pangolin
 // resource. Every field is optional - the server only touches the
-// keys that are present in the payload. Pre-1.19 servers ignore the
-// 1.19-only fields, so it's safe to always send `omitempty`.
+// keys that are present in the payload. The body schema is strict
+// (unknown keys are refused with 400 "Unrecognized key"), so a field
+// a server version does not know must stay off the payload unless
+// the config sets it: every field but `name` is `omitempty`.
 type UpdateResourceRequest struct {
 	Name                  string  `json:"name"`
 	Subdomain             *string `json:"subdomain,omitempty"`
@@ -1433,6 +1509,18 @@ type UpdateResourceRequest struct {
 	Headers       *[]ResourceHeader `json:"headers,omitempty"`
 	SkipToIdpID   *int              `json:"skipToIdpId,omitempty"`
 	PostAuthPath  *string           `json:"postAuthPath,omitempty"`
+
+	// 1.24+ name of Headers. 1.24 still accepts `headers` as a
+	// deprecated alias, pre-1.24 servers refuse this key: set one or
+	// the other, never both (1.24 would concatenate them). An empty
+	// list clears the headers (1.24 stores it as null).
+	RequestHeaders *[]ResourceHeader `json:"requestHeaders,omitempty"`
+
+	// 1.24+ response headers. Pre-1.24 servers refuse the key
+	// (strict body schema), so it is only sent when the config uses
+	// it. A pointer to a nil slice encodes as `null`, which clears
+	// the list.
+	ResponseHeaders *[]ResourceHeader `json:"responseHeaders,omitempty"`
 
 	// 1.19+ additions - maintenance mode
 	MaintenanceModeEnabled   *bool   `json:"maintenanceModeEnabled,omitempty"`

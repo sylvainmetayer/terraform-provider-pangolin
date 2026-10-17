@@ -1,9 +1,12 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
@@ -528,5 +531,231 @@ func TestIsUnknownList(t *testing.T) {
 	}
 	if isUnknownList([]ResourceHeaderModel{{Name: types.StringValue("a"), Value: types.StringValue("b")}}) {
 		t.Errorf("populated slice is not unknown")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// headers: removal and 1.24 `requestHeaders`
+// -----------------------------------------------------------------------------
+
+func TestClearRemovedHeaders(t *testing.T) {
+	withHeaders := []ResourceHeaderModel{{Name: types.StringValue("X-A"), Value: types.StringValue("1")}}
+	cases := []struct {
+		name      string
+		plan      []ResourceHeaderModel
+		state     []ResourceHeaderModel
+		wantSent  bool
+		wantCount int
+	}{
+		{"removed from config clears", nil, withHeaders, true, 0},
+		{"never set sends nothing", nil, nil, false, 0},
+		{"explicit empty list is sent as is", []ResourceHeaderModel{}, withHeaders, true, 0},
+		{"configured list is sent as is", withHeaders, nil, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := HTTPResourceModel{Name: types.StringValue("res"), Headers: tc.plan}
+			state := HTTPResourceModel{Name: types.StringValue("res"), Headers: tc.state}
+			req := buildHTTPResourceUpdateRequest(plan)
+			clearRemovedHeaders(req, plan, state)
+			if (req.Headers != nil) != tc.wantSent {
+				t.Fatalf("Headers sent = %v, want %v", req.Headers != nil, tc.wantSent)
+			}
+			if tc.wantSent && len(*req.Headers) != tc.wantCount {
+				t.Errorf("len(Headers) = %d, want %d", len(*req.Headers), tc.wantCount)
+			}
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.wantSent && tc.wantCount == 0 && !strings.Contains(string(raw), `"headers":[]`) {
+				t.Errorf("payload %s must carry an explicit empty headers list", raw)
+			}
+		})
+	}
+}
+
+func TestApplyHTTPResourceResponse_ReadsRequestHeaders124(t *testing.T) {
+	res := &client.Resource{
+		ResourceID:     1,
+		Name:           "web",
+		RequestHeaders: client.ResourceHeaders{{Name: "X-Env", Value: "prod"}},
+	}
+	m := applyHTTPResourceResponse(HTTPResourceModel{}, res)
+	if len(m.Headers) != 1 || m.Headers[0].Name.ValueString() != "X-Env" {
+		t.Errorf("Headers = %+v, want the 1.24 requestHeaders", m.Headers)
+	}
+}
+
+func TestApplyHTTPResourceResponse_EmptyHeadersKeepsNullOrEmpty(t *testing.T) {
+	res := &client.Resource{ResourceID: 1, Name: "web"}
+
+	// Config without the attribute: null stays null.
+	if m := applyHTTPResourceResponse(HTTPResourceModel{}, res); m.Headers != nil {
+		t.Errorf("null prior: Headers = %#v, want nil", m.Headers)
+	}
+	// Config with `headers = []`: the empty list must survive, or the
+	// framework reports an inconsistent result after apply.
+	m := applyHTTPResourceResponse(HTTPResourceModel{Headers: []ResourceHeaderModel{}}, res)
+	if m.Headers == nil || len(m.Headers) != 0 {
+		t.Errorf("empty prior: Headers = %#v, want empty non-nil", m.Headers)
+	}
+	// State that had headers, server now reports none (cleared out
+	// of band): null, so a config without the attribute sees no diff.
+	prior := []ResourceHeaderModel{{Name: types.StringValue("X-A"), Value: types.StringValue("1")}}
+	if m := applyHTTPResourceResponse(HTTPResourceModel{Headers: prior}, res); m.Headers != nil {
+		t.Errorf("populated prior: Headers = %#v, want nil", m.Headers)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// response_headers (1.24+)
+// -----------------------------------------------------------------------------
+
+func TestBuildHTTPResourceUpdateRequest_ResponseHeaders(t *testing.T) {
+	// Unset: the key must stay off the payload, pre-1.24 servers
+	// reject it.
+	plan := HTTPResourceModel{Name: types.StringValue("res")}
+	raw, err := json.Marshal(buildHTTPResourceUpdateRequest(plan))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "responseHeaders") {
+		t.Errorf("unset response_headers leaked into the payload: %s", raw)
+	}
+
+	plan.ResponseHeaders = []ResourceHeaderModel{
+		{Name: types.StringValue("Strict-Transport-Security"), Value: types.StringValue("max-age=63072000")},
+	}
+	raw, err = json.Marshal(buildHTTPResourceUpdateRequest(plan))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"responseHeaders":[{"name":"Strict-Transport-Security","value":"max-age=63072000"}]`) {
+		t.Errorf("payload = %s", raw)
+	}
+}
+
+func TestClearRemovedHeaders_ResponseHeadersSendsNull(t *testing.T) {
+	prior := []ResourceHeaderModel{{Name: types.StringValue("X-Frame-Options"), Value: types.StringValue("DENY")}}
+	plan := HTTPResourceModel{Name: types.StringValue("res")}
+	state := HTTPResourceModel{Name: types.StringValue("res"), ResponseHeaders: prior}
+	req := buildHTTPResourceUpdateRequest(plan)
+	clearRemovedHeaders(req, plan, state)
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"responseHeaders":null`) {
+		t.Errorf("payload %s must clear responseHeaders with null", raw)
+	}
+	if strings.Contains(string(raw), `"headers"`) {
+		t.Errorf("request headers must stay untouched: %s", raw)
+	}
+
+	// No prior response headers (e.g. a pre-1.24 server): nothing sent.
+	req = buildHTTPResourceUpdateRequest(plan)
+	clearRemovedHeaders(req, plan, HTTPResourceModel{Name: types.StringValue("res")})
+	if req.ResponseHeaders != nil {
+		t.Errorf("ResponseHeaders = %+v, want nil", req.ResponseHeaders)
+	}
+}
+
+func TestApplyHTTPResourceResponse_ResponseHeaders(t *testing.T) {
+	res := &client.Resource{
+		ResourceID:      1,
+		Name:            "web",
+		ResponseHeaders: client.ResourceHeaders{{Name: "X-Frame-Options", Value: "DENY"}},
+	}
+	m := applyHTTPResourceResponse(HTTPResourceModel{}, res)
+	if len(m.ResponseHeaders) != 1 || m.ResponseHeaders[0].Value.ValueString() != "DENY" {
+		t.Errorf("ResponseHeaders = %+v", m.ResponseHeaders)
+	}
+	if m.Headers != nil {
+		t.Errorf("Headers = %+v, want nil", m.Headers)
+	}
+	// Pre-1.24 server: no key on the wire, attribute stays null.
+	if m := applyHTTPResourceResponse(HTTPResourceModel{}, &client.Resource{ResourceID: 1}); m.ResponseHeaders != nil {
+		t.Errorf("ResponseHeaders = %+v, want nil", m.ResponseHeaders)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// headers: write key, `requestHeaders` on 1.24+, `headers` before
+// -----------------------------------------------------------------------------
+
+// fakePrivate is an in-memory stand-in for the framework private state.
+type fakePrivate map[string][]byte
+
+func (f fakePrivate) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	return f[key], nil
+}
+
+func (f fakePrivate) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	f[key] = value
+	return nil
+}
+
+func TestRequestHeadersKeyPrivate_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	p := fakePrivate{}
+	// Missing key (state from an older provider): `headers`.
+	if got, _ := requestHeadersKeyFromPrivate(ctx, p); got {
+		t.Error("missing key must read as false")
+	}
+	setRequestHeadersKeyPrivate(ctx, p, &client.Resource{HasRequestHeadersKey: true})
+	if got, _ := requestHeadersKeyFromPrivate(ctx, p); !got {
+		t.Error("1.24 response must read back as true")
+	}
+	setRequestHeadersKeyPrivate(ctx, p, &client.Resource{})
+	if got, _ := requestHeadersKeyFromPrivate(ctx, p); got {
+		t.Error("pre-1.24 response must read back as false")
+	}
+}
+
+func TestUpdatePayload_RequestHeadersKey(t *testing.T) {
+	withHeaders := []ResourceHeaderModel{{Name: types.StringValue("X-A"), Value: types.StringValue("1")}}
+	cases := []struct {
+		name     string
+		plan     []ResourceHeaderModel
+		state    []ResourceHeaderModel
+		hasKey   bool
+		want     string
+		mustSkip string
+	}{
+		{"1.24 set", withHeaders, nil, true, `"requestHeaders":[{"name":"X-A","value":"1"}]`, `"headers"`},
+		{"pre-1.24 set", withHeaders, nil, false, `"headers":[{"name":"X-A","value":"1"}]`, `"requestHeaders"`},
+		{"1.24 removed clears", nil, withHeaders, true, `"requestHeaders":[]`, `"headers"`},
+		{"pre-1.24 removed clears", nil, withHeaders, false, `"headers":[]`, `"requestHeaders"`},
+		{"1.24 explicit empty", []ResourceHeaderModel{}, nil, true, `"requestHeaders":[]`, `"headers"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := HTTPResourceModel{Name: types.StringValue("res"), Headers: tc.plan}
+			state := HTTPResourceModel{Name: types.StringValue("res"), Headers: tc.state}
+			req := buildHTTPResourceUpdateRequest(plan)
+			clearRemovedHeaders(req, plan, state)
+			useRequestHeadersKey(req, tc.hasKey)
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(raw), tc.want) {
+				t.Errorf("payload %s, want %s", raw, tc.want)
+			}
+			if strings.Contains(string(raw), tc.mustSkip) {
+				t.Errorf("payload %s must not carry %s", raw, tc.mustSkip)
+			}
+		})
+	}
+
+	// Unset and never set: neither key, on both versions.
+	for _, hasKey := range []bool{true, false} {
+		req := buildHTTPResourceUpdateRequest(HTTPResourceModel{Name: types.StringValue("res")})
+		useRequestHeadersKey(req, hasKey)
+		raw, _ := json.Marshal(req)
+		if strings.Contains(string(raw), "eaders") {
+			t.Errorf("hasKey=%v: payload %s must carry no header key", hasKey, raw)
+		}
 	}
 }

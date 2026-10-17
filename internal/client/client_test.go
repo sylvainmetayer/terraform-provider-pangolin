@@ -4409,3 +4409,275 @@ func extractParam(rawQuery, key string) string {
 	}
 	return ""
 }
+
+// --- Resource headers wire-shape tests ---
+//
+// The server keeps a resource's injected headers in a JSON-encoded
+// string column. GET /resource/{id} parses it back into an array, but
+// POST /resource/{id} answers with the raw row, so the update response
+// carries the same list as a string. 1.24 also renamed the column
+// (and the response key) from `headers` to `requestHeaders`.
+
+func TestResourceHeaders_UnmarshalJSON_Shapes(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []ResourceHeader
+	}{
+		{"native array", `[{"name":"X-Env","value":"prod"}]`, []ResourceHeader{{Name: "X-Env", Value: "prod"}}},
+		{"string-encoded array", `"[{\"name\":\"X-Env\",\"value\":\"prod\"}]"`, []ResourceHeader{{Name: "X-Env", Value: "prod"}}},
+		{"string-encoded empty array", `"[]"`, []ResourceHeader{}},
+		{"empty array", `[]`, []ResourceHeader{}},
+		{"null", `null`, nil},
+		{"empty string", `""`, nil},
+		{"string-encoded null", `"null"`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var h ResourceHeaders
+			if err := json.Unmarshal([]byte(tc.raw), &h); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.raw, err)
+			}
+			if len(h) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (%+v)", len(h), len(tc.want), h)
+			}
+			for i := range tc.want {
+				if h[i] != tc.want[i] {
+					t.Errorf("[%d] = %+v, want %+v", i, h[i], tc.want[i])
+				}
+			}
+			// nil and empty differ: EffectiveRequestHeaders prefers a
+			// non-nil requestHeaders, even an empty one.
+			if (tc.want == nil) != (h == nil) {
+				t.Errorf("nil-ness for %s: got %#v, want %#v", tc.raw, h, tc.want)
+			}
+		})
+	}
+}
+
+func TestResourceHeaders_UnmarshalJSON_InvalidDoesNotEchoValues(t *testing.T) {
+	cases := map[string]string{
+		"string holding an object": `"{\"name\":\"Authorization\",\"value\":\"Bearer s3cret\"}"`,
+		"truncated string payload": `"[{\"name\":\"Authorization\",\"value\":\"Bearer s3cret"`,
+		"unquoted value in string": `"[{\"name\":\"Authorization\",\"value\":s3cret}]"`,
+		"wrong value type":         `[{"name":"Authorization","value":["s3cret"]}]`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			var h ResourceHeaders
+			err := json.Unmarshal([]byte(raw), &h)
+			if err == nil {
+				t.Fatalf("expected an error for %s", raw)
+			}
+			if strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("error leaks the header value: %v", err)
+			}
+		})
+	}
+}
+
+func TestResource_EffectiveRequestHeaders_Precedence(t *testing.T) {
+	legacy := ResourceHeaders{{Name: "X-Old", Value: "1"}}
+	cases := []struct {
+		name string
+		res  Resource
+		want []ResourceHeader
+	}{
+		{"pre-1.24 headers only", Resource{Headers: legacy}, legacy},
+		{"1.24 requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{{Name: "X-New", Value: "2"}}}, []ResourceHeader{{Name: "X-New", Value: "2"}}},
+		{"1.24 empty requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{}}, nil},
+		{"neither", Resource{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.res.EffectiveRequestHeaders()
+			if len(got) != len(tc.want) {
+				t.Fatalf("EffectiveRequestHeaders = %+v, want %+v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestGetResource_Pre124HeadersArray(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resourceId": 7,
+			"name":       "web",
+			"headers":    []map[string]string{{"name": "X-Env", "value": "prod"}},
+		})
+	})
+	res, err := c.GetResource(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetResource: %v", err)
+	}
+	got := res.EffectiveRequestHeaders()
+	if len(got) != 1 || got[0].Name != "X-Env" || got[0].Value != "prod" {
+		t.Errorf("EffectiveRequestHeaders = %+v", got)
+	}
+}
+
+func TestGetResource_124RequestHeadersArray(t *testing.T) {
+	// 1.24 GET: `requestHeaders` / `responseHeaders` parsed arrays,
+	// no `headers` key at all.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resourceId":      7,
+			"name":            "web",
+			"requestHeaders":  []map[string]string{{"name": "X-Env", "value": "prod"}},
+			"responseHeaders": nil,
+		})
+	})
+	res, err := c.GetResource(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetResource: %v", err)
+	}
+	got := res.EffectiveRequestHeaders()
+	if len(got) != 1 || got[0].Name != "X-Env" {
+		t.Errorf("EffectiveRequestHeaders = %+v", got)
+	}
+}
+
+func TestUpdateResource_DecodesStringEncodedHeaders(t *testing.T) {
+	// Update responses are the raw DB row: the list is a JSON string,
+	// under `headers` up to 1.23 and `requestHeaders` from 1.24. The
+	// client used to fail with "failed to parse resource" here.
+	for _, key := range []string{"headers", "requestHeaders"} {
+		t.Run(key, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				writeEnvelope(t, w, http.StatusOK, map[string]any{
+					"resourceId": 7,
+					"name":       "web",
+					key:          `[{"name":"X-Env","value":"prod"},{"name":"X-Team","value":"core"}]`,
+				})
+			})
+			res, err := c.UpdateResource(context.Background(), 7, &UpdateResourceRequest{Name: "web"})
+			if err != nil {
+				t.Fatalf("UpdateResource: %v", err)
+			}
+			got := res.EffectiveRequestHeaders()
+			if len(got) != 2 || got[1].Name != "X-Team" || got[1].Value != "core" {
+				t.Errorf("EffectiveRequestHeaders = %+v", got)
+			}
+		})
+	}
+}
+
+func TestUpdateResource_EmptyHeadersSentAsEmptyArray(t *testing.T) {
+	// An empty list must reach the server as `"headers":[]` (clear),
+	// never be dropped by omitempty (which would mean "unchanged").
+	var body map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resourceId": 7,
+			"name":       "web",
+			"headers":    "[]",
+		})
+	})
+	empty := []ResourceHeader{}
+	res, err := c.UpdateResource(context.Background(), 7, &UpdateResourceRequest{Name: "web", Headers: &empty})
+	if err != nil {
+		t.Fatalf("UpdateResource: %v", err)
+	}
+	if string(body["headers"]) != "[]" {
+		t.Errorf(`body headers = %s, want []`, body["headers"])
+	}
+	if len(res.EffectiveRequestHeaders()) != 0 {
+		t.Errorf("EffectiveRequestHeaders = %+v, want empty", res.EffectiveRequestHeaders())
+	}
+}
+
+func TestUpdateResource_124ResponseHeaders(t *testing.T) {
+	var body map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		// Raw row: both lists as JSON strings (or null).
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resourceId":      7,
+			"name":            "web",
+			"requestHeaders":  nil,
+			"responseHeaders": `[{"name":"X-Frame-Options","value":"DENY"}]`,
+		})
+	})
+	hs := []ResourceHeader{{Name: "X-Frame-Options", Value: "DENY"}}
+	res, err := c.UpdateResource(context.Background(), 7, &UpdateResourceRequest{Name: "web", ResponseHeaders: &hs})
+	if err != nil {
+		t.Fatalf("UpdateResource: %v", err)
+	}
+	if _, ok := body["headers"]; ok {
+		t.Errorf("headers must not be sent: %s", body["headers"])
+	}
+	if string(body["responseHeaders"]) != `[{"name":"X-Frame-Options","value":"DENY"}]` {
+		t.Errorf("body responseHeaders = %s", body["responseHeaders"])
+	}
+	if len(res.ResponseHeaders) != 1 || res.ResponseHeaders[0].Value != "DENY" {
+		t.Errorf("ResponseHeaders = %+v", res.ResponseHeaders)
+	}
+	if len(res.EffectiveRequestHeaders()) != 0 {
+		t.Errorf("EffectiveRequestHeaders = %+v, want empty", res.EffectiveRequestHeaders())
+	}
+}
+
+func TestResource_HasRequestHeadersKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		wantKey   bool
+		wantCount int
+		wantSSO   bool
+	}{
+		{"pre-1.24 row, headers string", `{"resourceId":1,"headers":"[{\"name\":\"X-A\",\"value\":\"1\"}]","sso":1}`, false, 1, true},
+		{"pre-1.24 row, no header key", `{"resourceId":1}`, false, 0, false},
+		{"1.24 GET, requestHeaders null", `{"resourceId":1,"requestHeaders":null,"responseHeaders":null}`, true, 0, false},
+		{"1.24 GET, requestHeaders array", `{"resourceId":1,"requestHeaders":[{"name":"X-A","value":"1"}],"sso":true}`, true, 1, true},
+		{"1.24 row, requestHeaders string", `{"resourceId":1,"requestHeaders":"[{\"name\":\"X-A\",\"value\":\"1\"}]"}`, true, 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r Resource
+			if err := json.Unmarshal([]byte(tc.raw), &r); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if r.HasRequestHeadersKey != tc.wantKey {
+				t.Errorf("HasRequestHeadersKey = %v, want %v", r.HasRequestHeadersKey, tc.wantKey)
+			}
+			if got := r.EffectiveRequestHeaders(); len(got) != tc.wantCount {
+				t.Errorf("EffectiveRequestHeaders = %+v, want %d entries", got, tc.wantCount)
+			}
+			if r.SSO != tc.wantSSO {
+				t.Errorf("SSO = %v, want %v", r.SSO, tc.wantSSO)
+			}
+		})
+	}
+
+	var r Resource
+	err := json.Unmarshal([]byte(`{"resourceId":1,"requestHeaders":"[{\"name\":\"X-A\",\"value\":s3cret}]"}`), &r)
+	if err == nil {
+		t.Fatal("expected an error for a malformed requestHeaders string")
+	}
+	if strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("error leaks the header value: %v", err)
+	}
+}
+
+func TestUpdateResourceRequest_RequestHeadersKey(t *testing.T) {
+	empty := []ResourceHeader{}
+	raw, err := json.Marshal(&UpdateResourceRequest{Name: "web", RequestHeaders: &empty})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"requestHeaders":[]`) || strings.Contains(string(raw), `"headers"`) {
+		t.Errorf("payload = %s, want requestHeaders:[] and no headers key", raw)
+	}
+}

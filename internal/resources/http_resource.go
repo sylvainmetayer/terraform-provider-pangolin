@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -68,8 +69,10 @@ type HTTPResourceModel struct {
 	SetHostHeader types.String          `tfsdk:"set_host_header"`
 	EnableProxy   types.Bool            `tfsdk:"enable_proxy"`
 	Headers       []ResourceHeaderModel `tfsdk:"headers"`
-	SkipToIdpID   types.Int64           `tfsdk:"skip_to_idp_id"`
-	PostAuthPath  types.String          `tfsdk:"post_auth_path"`
+	// 1.24+ response headers.
+	ResponseHeaders []ResourceHeaderModel `tfsdk:"response_headers"`
+	SkipToIdpID     types.Int64           `tfsdk:"skip_to_idp_id"`
+	PostAuthPath    types.String          `tfsdk:"post_auth_path"`
 
 	// 1.19+ mutable proxy-protocol config.
 	ProxyProtocol        types.Bool  `tfsdk:"proxy_protocol"`
@@ -297,9 +300,26 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"headers": schema.ListNestedAttribute{
-				Description: "Static request headers injected on the upstream request - list of `{name, value}` objects. " +
-					"Leave unset to keep the server default (no injection). Cannot be marked Computed because " +
-					"the Go slice model type in the plugin framework does not carry an \"unknown\" sentinel.",
+				Description: "Static request headers injected on the upstream request - list of `{name, value}` objects " +
+					"(sent as `requestHeaders` to Pangolin >= 1.24, as `headers` to older servers). " +
+					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
+					"on the next apply when the attribute is absent from the config, as are the ones it no longer lists. " +
+					"Removing the attribute, or setting it to `[]`, clears the headers on the server. Cannot be marked " +
+					"Computed because the Go slice model type in the plugin framework does not carry an \"unknown\" sentinel.",
+				Optional: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":  schema.StringAttribute{Description: "Header name.", Required: true},
+						"value": schema.StringAttribute{Description: "Header value.", Required: true},
+					},
+				},
+			},
+			"response_headers": schema.ListNestedAttribute{
+				Description: "Static headers added to the response sent back to the client - list of `{name, value}` " +
+					"objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. " +
+					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
+					"on the next apply when the attribute is absent from the config. " +
+					"Removing the attribute, or setting it to `[]`, clears the headers on the server.",
 				Optional: true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -486,16 +506,18 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// Update round-trip. L7 (http) still uses the historical
 	// Create + Update pattern so user-set sso/ssl/etc. are pushed.
 	if mode == "http" {
-		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), buildHTTPResourceUpdateRequest(plan))
+		updateReq := buildHTTPResourceUpdateRequest(plan)
+		useRequestHeadersKey(updateReq, resource.HasRequestHeadersKey)
+		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), updateReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
 			return
 		}
-		plan = applyHTTPResourceResponse(plan, updated)
-	} else {
-		plan = applyHTTPResourceResponse(plan, resource)
+		resource = updated
 	}
+	plan = applyHTTPResourceResponse(plan, resource)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, resource)...)
 }
 
 func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -517,11 +539,13 @@ func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 	state = applyHTTPResourceResponse(state, resource)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, resource)...)
 }
 
 func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan HTTPResourceModel
+	var plan, state HTTPResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -531,6 +555,13 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// them so we don't 400 on an unrelated field the user could not
 	// have written anyway.
 	updateReq := buildHTTPResourceUpdateRequest(plan)
+	clearRemovedHeaders(updateReq, plan, state)
+	// The flag comes from the last refresh. Known limitation: after a
+	// server downgrade from 1.24, an apply with -refresh=false still
+	// sends `requestHeaders` and gets a 400; a normal refresh fixes it.
+	hasKey, diags := requestHeadersKeyFromPrivate(ctx, req.Private)
+	resp.Diagnostics.Append(diags...)
+	useRequestHeadersKey(updateReq, hasKey)
 	if plan.Mode.ValueString() != "http" {
 		updateReq = &client.UpdateResourceRequest{
 			Name:    plan.Name.ValueString(),
@@ -545,6 +576,7 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	plan = applyHTTPResourceResponse(plan, res)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, res)...)
 }
 
 func (r *HTTPResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -577,6 +609,7 @@ func (r *HTTPResource) ImportState(ctx context.Context, req resource.ImportState
 	state := HTTPResourceModel{ID: types.Int64Value(int64(res.ResourceID))}
 	state = applyHTTPResourceResponse(state, res)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, res)...)
 }
 
 // buildHTTPResourceUpdateRequest builds an UpdateResourceRequest from the model,
@@ -638,14 +671,12 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 		}
 	}
 	if !isUnknownList(plan.Headers) {
-		hs := make([]client.ResourceHeader, len(plan.Headers))
-		for i, h := range plan.Headers {
-			hs[i] = client.ResourceHeader{
-				Name:  h.Name.ValueString(),
-				Value: h.Value.ValueString(),
-			}
-		}
+		hs := headersToWire(plan.Headers)
 		req.Headers = &hs
+	}
+	if plan.ResponseHeaders != nil {
+		hs := headersToWire(plan.ResponseHeaders)
+		req.ResponseHeaders = &hs
 	}
 	if !plan.SkipToIdpID.IsUnknown() {
 		if plan.SkipToIdpID.IsNull() {
@@ -708,11 +739,111 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 }
 
 // isUnknownList reports whether a nested-list model slice came in
-// from Terraform as an Unknown value. A nil slice is our own signal
-// (never populated from the plan yet), while a non-nil-but-empty
-// slice is a user-provided empty list.
+// from Terraform as a null value (attribute absent from the config):
+// the framework decodes a null list into a nil slice, and an explicit
+// empty list (`headers = []`) into a non-nil empty one.
 func isUnknownList(hs []ResourceHeaderModel) bool {
 	return hs == nil
+}
+
+// clearRemovedHeaders turns a header list removed from the config into
+// an explicit clear. buildHTTPResourceUpdateRequest leaves a null
+// `headers` off the payload, which the server reads as "unchanged", so
+// without this the injected headers survived their removal and the
+// plan showed the same diff forever. An empty list clears them on
+// every 1.19+ server (up to 1.23 it is stored as "[]", 1.24 stores
+// null). Nothing is sent when the prior state had no headers, so a
+// resource that never used the attribute keeps a minimal payload.
+//
+// Response headers (1.24+ only) are cleared with `null` the same way;
+// the key is never sent to a server that never reported any, so
+// pre-1.24 servers, which refuse it, are unaffected.
+func clearRemovedHeaders(req *client.UpdateResourceRequest, plan, state HTTPResourceModel) {
+	if req.Headers == nil && plan.Headers == nil && len(state.Headers) > 0 {
+		empty := []client.ResourceHeader{}
+		req.Headers = &empty
+	}
+	if req.ResponseHeaders == nil && plan.ResponseHeaders == nil && len(state.ResponseHeaders) > 0 {
+		var none []client.ResourceHeader
+		req.ResponseHeaders = &none
+	}
+}
+
+// privateKeyRequestHeaders is the private-state key remembering
+// whether the server answered with the 1.24+ `requestHeaders` key.
+const privateKeyRequestHeaders = "request_headers_key"
+
+// privateState is the subset of the framework's private state used
+// here (resp.Private / req.Private), so tests can fake it.
+type privateState interface {
+	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
+	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
+}
+
+// setRequestHeadersKeyPrivate records, from the last resource response,
+// whether the server is a 1.24+ one (see client.Resource.HasRequestHeadersKey).
+// Every Create / Read / Update / Import refreshes it, so Update can
+// pick the write key without an extra GET.
+func setRequestHeadersKeyPrivate(ctx context.Context, p privateState, res *client.Resource) diag.Diagnostics {
+	v := []byte("false")
+	if res.HasRequestHeadersKey {
+		v = []byte("true")
+	}
+	return p.SetKey(ctx, privateKeyRequestHeaders, v)
+}
+
+// requestHeadersKeyFromPrivate reads the flag back. A missing key
+// (state written by an older provider version, never refreshed since)
+// means false: `headers` is accepted by every 1.19+ server, 1.24
+// included (deprecated alias).
+func requestHeadersKeyFromPrivate(ctx context.Context, p privateState) (bool, diag.Diagnostics) {
+	v, diags := p.GetKey(ctx, privateKeyRequestHeaders)
+	return string(v) == "true", diags
+}
+
+// useRequestHeadersKey moves the request headers of the payload to the
+// 1.24+ `requestHeaders` key when the server has it. `headers` is only
+// a deprecated alias there; pre-1.24 servers refuse `requestHeaders`.
+// An explicit empty list is moved as is: 1.24 stores it as null.
+func useRequestHeadersKey(req *client.UpdateResourceRequest, hasKey bool) {
+	if !hasKey || req.Headers == nil {
+		return
+	}
+	req.RequestHeaders = req.Headers
+	req.Headers = nil
+}
+
+// headersToWire maps configured headers to the wire shape.
+func headersToWire(hs []ResourceHeaderModel) []client.ResourceHeader {
+	out := make([]client.ResourceHeader, len(hs))
+	for i, h := range hs {
+		out[i] = client.ResourceHeader{
+			Name:  h.Name.ValueString(),
+			Value: h.Value.ValueString(),
+		}
+	}
+	return out
+}
+
+// headerModelsFromWire maps a wire header list to the model. An empty
+// wire list maps to null, except when the prior model holds an explicit
+// empty list (`headers = []` in the config): keeping it empty there
+// avoids an "inconsistent result after apply" on the null/[] mismatch.
+func headerModelsFromWire(prior []ResourceHeaderModel, wire []client.ResourceHeader) []ResourceHeaderModel {
+	if len(wire) == 0 {
+		if prior != nil && len(prior) == 0 {
+			return []ResourceHeaderModel{}
+		}
+		return nil
+	}
+	hs := make([]ResourceHeaderModel, len(wire))
+	for i, h := range wire {
+		hs[i] = ResourceHeaderModel{
+			Name:  types.StringValue(h.Name),
+			Value: types.StringValue(h.Value),
+		}
+	}
+	return hs
 }
 
 // applyHTTPResourceResponse copies API response fields into the model.
@@ -787,19 +918,10 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	m.ResourcePolicyID = tfconv.Int64FromIntPtr(res.ResourcePolicyID)
 	m.DefaultResourcePolicyID = tfconv.Int64FromIntPtr(res.DefaultResourcePolicyID)
 
-	// Headers - round-trip the list. An absent/empty wire list keeps
-	// the model at nil so it round-trips as null (Optional+Computed).
-	if len(res.Headers) > 0 {
-		hs := make([]ResourceHeaderModel, len(res.Headers))
-		for i, h := range res.Headers {
-			hs[i] = ResourceHeaderModel{
-				Name:  types.StringValue(h.Name),
-				Value: types.StringValue(h.Value),
-			}
-		}
-		m.Headers = hs
-	} else {
-		m.Headers = nil
-	}
+	// Headers - round-trip the list, read from `requestHeaders` on
+	// 1.24+ and from `headers` before. An absent/empty wire list maps
+	// to null, see headerModelsFromWire.
+	m.Headers = headerModelsFromWire(m.Headers, res.EffectiveRequestHeaders())
+	m.ResponseHeaders = headerModelsFromWire(m.ResponseHeaders, res.ResponseHeaders)
 	return m
 }
