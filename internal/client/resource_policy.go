@@ -286,14 +286,22 @@ func (c *Client) ListResourcePolicies(ctx context.Context, query string) ([]Reso
 		var out struct {
 			Policies   []ResourcePolicySummary `json:"policies"`
 			Pagination struct {
-				Total int `json:"total"`
+				Total    *int `json:"total"`
+				PageSize *int `json:"pageSize"`
 			} `json:"pagination"`
 		}
 		if err := json.Unmarshal(resp.Data, &out); err != nil {
 			return nil, fmt.Errorf("failed to parse resource policies: %w", err)
 		}
 		all = append(all, out.Policies...)
-		if len(out.Policies) < resourcePolicyListPageSize || len(all) >= out.Pagination.Total {
+		// The server echoes the page size it applied; trust it over the
+		// requested one so a server-side cap does not end the walk early.
+		pageSize := resourcePolicyListPageSize
+		if out.Pagination.PageSize != nil && *out.Pagination.PageSize > 0 {
+			pageSize = *out.Pagination.PageSize
+		}
+		if len(out.Policies) == 0 || len(out.Policies) < pageSize ||
+			(out.Pagination.Total != nil && len(all) >= *out.Pagination.Total) {
 			return all, nil
 		}
 	}

@@ -292,3 +292,33 @@ func TestListResourcePolicies_WalksPages(t *testing.T) {
 		t.Errorf("resources = %+v", got[0].Resources)
 	}
 }
+
+func TestListResourcePolicies_CappedPageSizeWithoutTotal(t *testing.T) {
+	// A server that caps pageSize at 2 and omits total: the walk must
+	// follow the echoed page size and stop on the first short page.
+	var pages []int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pages = append(pages, page)
+		n := 2
+		if page == 3 {
+			n = 1
+		}
+		policies := make([]map[string]any, n)
+		for i := range policies {
+			policies[i] = map[string]any{"resourcePolicyId": page*10 + i, "name": "p", "orgId": "test-org"}
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"policies":   policies,
+			"pagination": map[string]any{"pageSize": 2, "page": page},
+		})
+	})
+
+	got, err := c.ListResourcePolicies(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListResourcePolicies: %v", err)
+	}
+	if len(got) != 5 || len(pages) != 3 {
+		t.Errorf("got %d policies over pages %v, want 5 over 3", len(got), pages)
+	}
+}

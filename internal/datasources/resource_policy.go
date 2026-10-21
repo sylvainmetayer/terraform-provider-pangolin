@@ -2,6 +2,7 @@ package datasources
 
 import (
 	"context"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -146,16 +147,31 @@ func resourcePolicyDataModel(p *client.ResourcePolicy) ResourcePolicyDataSourceM
 	if p.HasHeaderAuth() {
 		m.HeaderAuthExtendedCompatibility = tfconv.BoolFromPtr(p.HeaderAuth.ExtendedCompatibility)
 	}
-	for _, role := range p.Roles {
+	// The server returns these lists unordered: sort them so the data
+	// source output is stable between refreshes.
+	roles := append([]client.ResourcePolicyRole(nil), p.Roles...)
+	sort.Slice(roles, func(i, j int) bool { return roles[i].RoleID < roles[j].RoleID })
+	users := append([]client.ResourcePolicyUser(nil), p.Users...)
+	sort.Slice(users, func(i, j int) bool { return users[i].UserID < users[j].UserID })
+	emails := append([]client.ResourcePolicyWhitelistEntry(nil), p.EmailWhitelist...)
+	sort.Slice(emails, func(i, j int) bool { return emails[i].Email < emails[j].Email })
+	rules := append([]client.ResourcePolicyRule(nil), p.Rules...)
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Priority != rules[j].Priority {
+			return rules[i].Priority < rules[j].Priority
+		}
+		return rules[i].RuleID < rules[j].RuleID
+	})
+	for _, role := range roles {
 		m.RoleIDs = append(m.RoleIDs, types.Int64Value(int64(role.RoleID)))
 	}
-	for _, user := range p.Users {
+	for _, user := range users {
 		m.UserIDs = append(m.UserIDs, types.StringValue(user.UserID))
 	}
-	for _, entry := range p.EmailWhitelist {
+	for _, entry := range emails {
 		m.WhitelistEmails = append(m.WhitelistEmails, types.StringValue(entry.Email))
 	}
-	for _, rule := range p.Rules {
+	for _, rule := range rules {
 		enabled := true
 		if rule.Enabled != nil {
 			enabled = *rule.Enabled

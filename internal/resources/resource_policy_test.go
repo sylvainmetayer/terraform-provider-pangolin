@@ -211,14 +211,12 @@ func TestResourcePolicyIDUpdate(t *testing.T) {
 		plan, prior types.Int64
 		want        string // "" = key omitted
 	}{
-		{"unset keeps attachment", types.Int64Unknown(), types.Int64Value(5), ""},
-		{"null keeps attachment", types.Int64Null(), types.Int64Value(5), ""},
+		{"unknown sends nothing", types.Int64Unknown(), types.Int64Value(5), ""},
+		{"null detaches", types.Int64Null(), types.Int64Value(5), "null"},
+		{"never attached", types.Int64Null(), types.Int64Null(), ""},
 		{"unchanged", types.Int64Value(5), types.Int64Value(5), ""},
 		{"attach", types.Int64Value(5), types.Int64Null(), "5"},
 		{"switch", types.Int64Value(6), types.Int64Value(5), "6"},
-		{"detach", types.Int64Value(0), types.Int64Value(5), "null"},
-		{"already detached", types.Int64Value(0), types.Int64Null(), ""},
-		{"zero at create", types.Int64Value(0), types.Int64Null(), ""},
 	}
 	for _, tc := range cases {
 		got := resourcePolicyIDUpdate(tc.plan, tc.prior)
@@ -232,19 +230,14 @@ func TestResourcePolicyIDUpdate(t *testing.T) {
 }
 
 func TestApplyHTTPResourceResponse_ResourcePolicyID(t *testing.T) {
-	// A detached resource keeps the configured 0.
-	m := applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(0)}, &client.Resource{ResourceID: 1})
-	if m.ResourcePolicyID.IsNull() || m.ResourcePolicyID.ValueInt64() != 0 {
-		t.Errorf("detached: ResourcePolicyID = %v, want 0", m.ResourcePolicyID)
-	}
-	// An attachment made elsewhere is surfaced.
-	m = applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(0)}, &client.Resource{ResourceID: 1, ResourcePolicyID: intPtr(8)})
+	// The server value always wins: an attachment made elsewhere is
+	// surfaced, a detached resource reads back null.
+	m := applyHTTPResourceResponse(HTTPResourceModel{}, &client.Resource{ResourceID: 1, ResourcePolicyID: intPtr(8)})
 	if m.ResourcePolicyID.ValueInt64() != 8 {
-		t.Errorf("attached elsewhere: ResourcePolicyID = %v, want 8", m.ResourcePolicyID)
+		t.Errorf("attached: ResourcePolicyID = %v, want 8", m.ResourcePolicyID)
 	}
-	// A policy detached elsewhere goes back to null.
 	m = applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(8)}, &client.Resource{ResourceID: 1})
 	if !m.ResourcePolicyID.IsNull() {
-		t.Errorf("detached elsewhere: ResourcePolicyID = %v, want null", m.ResourcePolicyID)
+		t.Errorf("detached: ResourcePolicyID = %v, want null", m.ResourcePolicyID)
 	}
 }

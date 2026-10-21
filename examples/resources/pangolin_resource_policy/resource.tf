@@ -18,7 +18,7 @@ resource "pangolin_resource_policy" "internal" {
   ]
 }
 
-# Attach resources to the policy. Set `resource_policy_id = 0` to
+# Attach resources to the policy. Remove `resource_policy_id` to
 # detach a resource and fall back to its own inline policy.
 resource "pangolin_resource" "wiki" {
   name               = "wiki"

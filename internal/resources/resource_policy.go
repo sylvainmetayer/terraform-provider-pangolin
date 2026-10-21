@@ -406,7 +406,7 @@ func (r *ResourcePolicyResource) Delete(ctx context.Context, req resource.Delete
 		}
 		resp.Diagnostics.AddError("Failed to delete resource policy",
 			err.Error()+"\n\nPangolin refuses to delete a policy that is still attached to a resource: detach it first "+
-				"(set `resource_policy_id = 0` on the `pangolin_resource`).")
+				"(remove `resource_policy_id` from the `pangolin_resource`).")
 	}
 }
 

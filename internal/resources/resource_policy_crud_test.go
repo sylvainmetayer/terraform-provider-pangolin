@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -198,7 +199,7 @@ func TestHTTPResourceUpdate_DetachSendsNullPolicy(t *testing.T) {
 		ResourcePolicyID: types.Int64Value(5),
 	}
 	plan := prior
-	plan.ResourcePolicyID = types.Int64Value(0)
+	plan.ResourcePolicyID = types.Int64Null()
 	req := resource.UpdateRequest{
 		Plan:  tfsdk.Plan{Schema: schemaResp.Schema, Raw: tftypes.NewValue(typ, nil)},
 		State: tfsdk.State{Schema: schemaResp.Schema, Raw: tftypes.NewValue(typ, nil)},
@@ -222,7 +223,45 @@ func TestHTTPResourceUpdate_DetachSendsNullPolicy(t *testing.T) {
 	}
 	var state HTTPResourceModel
 	resp.State.Get(ctx, &state)
-	if state.ResourcePolicyID.IsNull() || state.ResourcePolicyID.ValueInt64() != 0 {
-		t.Errorf("state ResourcePolicyID = %v, want 0", state.ResourcePolicyID)
+	if !state.ResourcePolicyID.IsNull() {
+		t.Errorf("state ResourcePolicyID = %v, want null", state.ResourcePolicyID)
+	}
+}
+
+func TestHTTPResourceCreate_FailedAttachKeepsID(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": true, "message": "Resource policy with ID 9 not found", "status": 400})
+			return
+		}
+		data, _ := json.Marshal(map[string]any{"resourceId": 3, "niceId": "db", "name": "db", "mode": "tcp"})
+		_ = json.NewEncoder(w).Encode(client.APIResponse{Data: data, Success: true, Status: 200})
+	}))
+	t.Cleanup(srv.Close)
+	r := &HTTPResource{client: client.NewClient(srv.URL, "test-key", "test-org")}
+	schemaResp, typ := resourceSchema(t, r)
+
+	plan := HTTPResourceModel{
+		Name:             types.StringValue("db"),
+		Mode:             types.StringValue("tcp"),
+		Protocol:         types.StringValue("tcp"),
+		ProxyPort:        types.Int64Value(5432),
+		ResourcePolicyID: types.Int64Value(9),
+	}
+	req := resource.CreateRequest{Plan: tfsdk.Plan{Schema: schemaResp.Schema, Raw: tftypes.NewValue(typ, nil)}}
+	if diags := req.Plan.Set(ctx, &plan); diags.HasError() {
+		t.Fatalf("plan: %v", diags)
+	}
+	resp := resource.CreateResponse{State: tfsdk.State{Schema: schemaResp.Schema, Raw: tftypes.NewValue(typ, nil)}}
+	r.Create(ctx, req, &resp)
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected the attach error to surface")
+	}
+	var id types.Int64
+	resp.State.GetAttribute(ctx, path.Root("id"), &id)
+	if id.ValueInt64() != 3 {
+		t.Errorf("state id = %v, want 3 so the resource is tainted, not orphaned", id)
 	}
 }

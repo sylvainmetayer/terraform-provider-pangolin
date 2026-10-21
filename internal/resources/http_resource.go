@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -404,8 +405,9 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"resource_policy_id": schema.Int64Attribute{
 				Description: "ID of the shared resource policy (`pangolin_resource_policy`, Enterprise) this resource is attached to. " +
-					"Leave unset to keep the current attachment, set a policy ID to attach the resource, or set `0` to detach it " +
-					"and fall back to its own inline policy.\n\n" +
+					"Set a policy ID to attach the resource; leave it unset to keep the resource on its own inline policy. " +
+					"The attribute is authoritative: removing it detaches the resource, and an attachment made outside " +
+					"Terraform is removed on the next apply.\n\n" +
 					"> **Note:** Pangolin wipes the resource-level password, PIN code, header auth, email whitelist, rules and " +
 					"user / role grants (except the admin role) whenever the attachment changes, so the policy fully governs " +
 					"access. Resource-level `pangolin_resource_password`, `pangolin_resource_rule`, `pangolin_resource_role` " +
@@ -413,12 +415,8 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					"`email_whitelist_enabled`, `apply_rules` and `skip_to_idp_id` set on this resource override the shared " +
 					"policy for this resource only.",
 				Optional: true,
-				Computed: true,
 				Validators: []validator.Int64{
-					int64validator.AtLeast(0),
-				},
-				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.UseStateForUnknown(),
+					int64validator.AtLeast(1),
 				},
 			},
 			"default_resource_policy_id": schema.Int64Attribute{
@@ -489,6 +487,10 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	plan.ID = types.Int64Value(int64(resource.ResourceID))
 	plan.NiceID = types.StringValue(resource.NiceID)
+
+	// Keep the ID in state from here on so a failed follow-up call
+	// leaves a tainted resource rather than an orphaned one.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), plan.ID)...)
 
 	// L4 resources (mode = tcp/udp) reject almost every scalar on
 	// the follow-up POST /resource/{id} - only `name`, `enabled`,
@@ -736,21 +738,21 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 }
 
 // resourcePolicyIDUpdate returns the resourcePolicyId payload value
-// for a planned attachment, or nil when it does not change. Null and 0
-// both mean "no shared policy"; 0 is sent as an explicit null.
+// for a planned attachment, or nil when it does not change. A null
+// plan detaches a resource that the prior state shows as attached.
 func resourcePolicyIDUpdate(plan, prior types.Int64) *json.RawMessage {
-	if plan.IsUnknown() || plan.IsNull() {
+	if plan.IsUnknown() {
 		return nil
 	}
-	var priorID int64
-	if !prior.IsUnknown() && !prior.IsNull() {
-		priorID = prior.ValueInt64()
-	}
-	if plan.ValueInt64() == priorID {
+	priorAttached := !prior.IsUnknown() && !prior.IsNull()
+	if plan.IsNull() {
+		if priorAttached {
+			return client.ResourcePolicyIDValue(nil)
+		}
 		return nil
 	}
-	if plan.ValueInt64() == 0 {
-		return client.ResourcePolicyIDValue(nil)
+	if priorAttached && plan.ValueInt64() == prior.ValueInt64() {
+		return nil
 	}
 	id := int(plan.ValueInt64())
 	return client.ResourcePolicyIDValue(&id)
@@ -833,11 +835,7 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	} else {
 		m.Health = types.StringNull()
 	}
-	// A detached resource keeps the `0` the user configured to detach
-	// it, so the plan stays clean.
-	if res.ResourcePolicyID != nil || m.ResourcePolicyID.IsNull() || m.ResourcePolicyID.IsUnknown() || m.ResourcePolicyID.ValueInt64() != 0 {
-		m.ResourcePolicyID = tfconv.Int64FromIntPtr(res.ResourcePolicyID)
-	}
+	m.ResourcePolicyID = tfconv.Int64FromIntPtr(res.ResourcePolicyID)
 	m.DefaultResourcePolicyID = tfconv.Int64FromIntPtr(res.DefaultResourcePolicyID)
 
 	// Headers - round-trip the list. An absent/empty wire list keeps

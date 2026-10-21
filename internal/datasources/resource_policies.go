@@ -2,6 +2,7 @@ package datasources
 
 import (
 	"context"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -124,7 +125,9 @@ func resourcePolicySummaryModels(policies []client.ResourcePolicySummary) []Reso
 			Name:      types.StringValue(p.Name),
 			Resources: []ResourcePolicyAttachedResourceModel{},
 		}
-		for _, r := range p.Resources {
+		attached := append([]client.ResourcePolicyAttachedResource(nil), p.Resources...)
+		sort.Slice(attached, func(i, j int) bool { return attached[i].ResourceID < attached[j].ResourceID })
+		for _, r := range attached {
 			m.Resources = append(m.Resources, ResourcePolicyAttachedResourceModel{
 				ResourceID: types.Int64Value(int64(r.ResourceID)),
 				NiceID:     types.StringValue(r.NiceID),
