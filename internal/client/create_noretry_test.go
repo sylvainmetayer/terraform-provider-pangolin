@@ -31,9 +31,6 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateUser", func(c *Client) error { _, err := c.CreateUser(ctx, &CreateUserRequest{}); return err }},
 		{"ApplyBlueprint", func(c *Client) error { return c.ApplyBlueprint(ctx, "e30=") }},
 		{"CreateIDP", func(c *Client) error { _, err := c.CreateIDP(ctx, &CreateIDPRequest{}); return err }},
-		{"CreateIDPOrgPolicy", func(c *Client) error {
-			return c.CreateIDPOrgPolicy(ctx, 1, "org", &SetIDPOrgPolicyRequest{})
-		}},
 		{"CreateOrgIDP", func(c *Client) error { _, err := c.CreateOrgIDP(ctx, "org", &CreateIDPRequest{}); return err }},
 		{"CreateResourceRule", func(c *Client) error {
 			_, err := c.CreateResourceRule(ctx, 1, &SetResourceRuleRequest{})

@@ -2733,7 +2733,7 @@ type ApplyBlueprintRequest struct {
 //
 // Empty / malformed JSON payloads return HTTP 400 with descriptive
 // validation error messages - surfaced as a plain error by
-// [Client.doRequest].
+// [Client.doRequestNoRetry]. The create is never replayed on a 5xx.
 func (c *Client) ApplyBlueprint(ctx context.Context, base64JSON string) error {
 	body := ApplyBlueprintRequest{Blueprint: base64JSON}
 	_, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/blueprint", c.OrgID), body)
@@ -2917,9 +2917,11 @@ type SetIDPOrgPolicyRequest struct {
 	OrgMapping  string `json:"orgMapping,omitempty"`
 }
 
-// CreateIDPOrgPolicy creates an IDP policy for an org.
+// CreateIDPOrgPolicy creates an IDP policy for an org. The path names the
+// single (idp, org) row, so a replay cannot duplicate it and the call
+// keeps doRequest's retries.
 func (c *Client) CreateIDPOrgPolicy(ctx context.Context, idpID int, orgID string, req *SetIDPOrgPolicyRequest) error {
-	_, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/idp/%d/org/%s", idpID, orgID), req)
+	_, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/idp/%d/org/%s", idpID, orgID), req)
 	return err
 }
 
