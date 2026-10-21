@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -34,6 +35,9 @@ var (
 	// ErrRateLimited is returned for HTTP 429. The client retries
 	// idempotent methods on this error.
 	ErrRateLimited = errors.New("pangolin: rate limited")
+	// ErrBadRequest is returned for HTTP 400 - the server refused the
+	// request body (validation error).
+	ErrBadRequest = errors.New("pangolin: bad request")
 	// ErrTransport wraps network-layer failures (connection refused,
 	// reset, TLS handshake errors, etc). The client retries idempotent
 	// methods on this error.
@@ -60,6 +64,11 @@ type Client struct {
 	APIKey     string
 	OrgID      string
 	HTTPClient *http.Client
+
+	// legacySiteResourceGrants is set once a pre-1.20 server has refused
+	// a site resource update without the grant lists, so later updates
+	// send them directly instead of failing first.
+	legacySiteResourceGrants atomic.Bool
 }
 
 // APIResponse is the standard Pangolin API response wrapper.
@@ -264,6 +273,8 @@ func truncateForDiag(body []byte) string {
 // Unknown status codes fall through to a plain error.
 func classifyError(status int, message string) error {
 	switch {
+	case status == http.StatusBadRequest:
+		return fmt.Errorf("API error (status 400): %s: %w", message, ErrBadRequest)
 	case status == http.StatusNotFound:
 		return fmt.Errorf("API error (status 404): %s: %w", message, ErrNotFound)
 	case status == http.StatusUnauthorized:
@@ -1463,25 +1474,29 @@ func (c *Client) UpdateResource(ctx context.Context, resourceID int, req *Update
 
 // UpdateSiteResourceRequest is the payload for updating a private site resource.
 //
-// `RoleIDs`, `UserIDs` and `ClientIDs` are omitted when empty. Since
-// Pangolin 1.20 the update endpoint treats a missing list as "leave the
-// grants unchanged", whereas an empty list removes every grant (all
-// users and clients, every role but the admin one). The grants are
-// managed by `pangolin_site_resource_role` / `_user` / `_client` or in
-// the UI, so an update of the resource itself must not touch them.
+// The update endpoint treats a missing key as "leave unchanged", so the
+// fields a caller may want to set to their zero value are pointers: nil
+// omits the key, a pointer to "" / false sends it.
+//
+// `RoleIDs`, `UserIDs` and `ClientIDs` follow the same rule. Since
+// Pangolin 1.20 a missing list leaves the grants unchanged, whereas an
+// empty list removes every grant (all users and clients, every role but
+// the admin one). The grants are managed by `pangolin_site_resource_role`
+// / `_user` / `_client` or in the UI, so an update of the resource itself
+// leaves them nil.
 type UpdateSiteResourceRequest struct {
-	Name           string   `json:"name"`
-	SiteID         int      `json:"siteId"`
-	Destination    string   `json:"destination"`
-	Alias          string   `json:"alias,omitempty"`
-	TCPPortRange   string   `json:"tcpPortRangeString,omitempty"`
-	UDPPortRange   string   `json:"udpPortRangeString,omitempty"`
-	DisableICMP    bool     `json:"disableIcmp,omitempty"`
-	AuthDaemonMode string   `json:"authDaemonMode,omitempty"`
-	PamMode        string   `json:"pamMode,omitempty"`
-	RoleIDs        []int    `json:"roleIds,omitempty"`
-	UserIDs        []string `json:"userIds,omitempty"`
-	ClientIDs      []int    `json:"clientIds,omitempty"`
+	Name           string    `json:"name"`
+	SiteID         int       `json:"siteId"`
+	Destination    string    `json:"destination"`
+	Alias          string    `json:"alias,omitempty"`
+	TCPPortRange   *string   `json:"tcpPortRangeString,omitempty"`
+	UDPPortRange   *string   `json:"udpPortRangeString,omitempty"`
+	DisableICMP    *bool     `json:"disableIcmp,omitempty"`
+	AuthDaemonMode string    `json:"authDaemonMode,omitempty"`
+	PamMode        string    `json:"pamMode,omitempty"`
+	RoleIDs        *[]int    `json:"roleIds,omitempty"`
+	UserIDs        *[]string `json:"userIds,omitempty"`
+	ClientIDs      *[]int    `json:"clientIds,omitempty"`
 
 	// HTTP-mode-only fields. Required when the underlying resource
 	// is in `http` mode; ignored for `cidr` / `host`.
@@ -1502,14 +1517,15 @@ type legacyUpdateSiteResourceBody struct {
 }
 
 // isMissingGrantListsError reports whether err is a pre-1.20 server
-// refusing an update body without `roleIds` / `userIds` / `clientIds`.
+// refusing an update body without `roleIds` / `userIds` / `clientIds`
+// (zod: `expected array, received undefined at "roleIds"`).
 func isMissingGrantListsError(err error) bool {
-	msg := err.Error()
-	if !strings.Contains(msg, "(status 400)") {
+	if !errors.Is(err, ErrBadRequest) {
 		return false
 	}
+	msg := err.Error()
 	for _, k := range []string{`"roleIds"`, `"userIds"`, `"clientIds"`} {
-		if strings.Contains(msg, k) {
+		if strings.Contains(msg, "received undefined at "+k) {
 			return true
 		}
 	}
@@ -1518,21 +1534,22 @@ func isMissingGrantListsError(err error) bool {
 
 // UpdateSiteResource updates a private site resource by ID.
 //
-// A server older than 1.20 refuses a body without the grant lists; the
-// update is then retried once with explicit lists (empty unless the
-// caller set them), which on those servers resets the grants as every
-// provider release did so far.
+// A server older than 1.20 refuses a body without the grant lists. The
+// update is then sent again with the lists set to the grants the
+// resource currently holds, so the old server keeps them, and the client
+// remembers to do so directly for the next updates.
 func (c *Client) UpdateSiteResource(ctx context.Context, siteResourceID int, req *UpdateSiteResourceRequest) (*SiteResource, error) {
 	path := fmt.Sprintf("/site-resource/%d", siteResourceID)
-	resp, err := c.doRequest(ctx, "POST", path, req)
-	if err != nil && isMissingGrantListsError(err) {
-		legacy := legacyUpdateSiteResourceBody{
-			UpdateSiteResourceRequest: req,
-			RoleIDs:                   append([]int{}, req.RoleIDs...),
-			UserIDs:                   append([]string{}, req.UserIDs...),
-			ClientIDs:                 append([]int{}, req.ClientIDs...),
+	var resp *APIResponse
+	var err error
+	if c.legacySiteResourceGrants.Load() {
+		resp, err = c.updateSiteResourceLegacy(ctx, siteResourceID, req)
+	} else {
+		resp, err = c.doRequest(ctx, "POST", path, req)
+		if err != nil && isMissingGrantListsError(err) {
+			c.legacySiteResourceGrants.Store(true)
+			resp, err = c.updateSiteResourceLegacy(ctx, siteResourceID, req)
 		}
-		resp, err = c.doRequest(ctx, "POST", path, legacy)
 	}
 	if err != nil {
 		return nil, err
@@ -1542,6 +1559,55 @@ func (c *Client) UpdateSiteResource(ctx context.Context, siteResourceID int, req
 		return nil, fmt.Errorf("failed to parse site resource: %w", err)
 	}
 	return &siteResource, nil
+}
+
+// updateSiteResourceLegacy sends the update with explicit grant lists
+// for a pre-1.20 server. A list the caller left nil is filled with the
+// current grants. Admin roles are left out: those servers keep the admin
+// role binding themselves and would fail inserting it twice.
+func (c *Client) updateSiteResourceLegacy(ctx context.Context, siteResourceID int, req *UpdateSiteResourceRequest) (*APIResponse, error) {
+	body := legacyUpdateSiteResourceBody{
+		UpdateSiteResourceRequest: req,
+		RoleIDs:                   []int{},
+		UserIDs:                   []string{},
+		ClientIDs:                 []int{},
+	}
+	if req.RoleIDs != nil {
+		body.RoleIDs = append(body.RoleIDs, *req.RoleIDs...)
+	} else {
+		roles, err := c.ListSiteResourceRoles(ctx, siteResourceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read current role grants: %w", err)
+		}
+		for _, r := range roles {
+			if !r.IsAdmin {
+				body.RoleIDs = append(body.RoleIDs, r.RoleID)
+			}
+		}
+	}
+	if req.UserIDs != nil {
+		body.UserIDs = append(body.UserIDs, *req.UserIDs...)
+	} else {
+		users, err := c.ListSiteResourceUsers(ctx, siteResourceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read current user grants: %w", err)
+		}
+		for _, u := range users {
+			body.UserIDs = append(body.UserIDs, u.UserID)
+		}
+	}
+	if req.ClientIDs != nil {
+		body.ClientIDs = append(body.ClientIDs, *req.ClientIDs...)
+	} else {
+		clients, err := c.ListSiteResourceClients(ctx, siteResourceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read current client grants: %w", err)
+		}
+		for _, cl := range clients {
+			body.ClientIDs = append(body.ClientIDs, cl.ClientID)
+		}
+	}
+	return c.doRequest(ctx, "POST", fmt.Sprintf("/site-resource/%d", siteResourceID), body)
 }
 
 // --- Roles CRUD ---

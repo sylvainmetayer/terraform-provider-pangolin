@@ -107,6 +107,7 @@ func TestDoRequest_StatusClassification(t *testing.T) {
 	}{
 		{"unauthorized", http.StatusUnauthorized, ErrUnauthorized},
 		{"forbidden", http.StatusForbidden, ErrForbidden},
+		{"bad request", http.StatusBadRequest, ErrBadRequest},
 		{"not found", http.StatusNotFound, ErrNotFound},
 		{"rate limited", http.StatusTooManyRequests, ErrRateLimited},
 		{"internal server", http.StatusInternalServerError, ErrServer},
@@ -123,7 +124,7 @@ func TestDoRequest_StatusClassification(t *testing.T) {
 				t.Fatalf("expected error for status %d", tc.status)
 			}
 			if tc.wantSentinel == nil {
-				for _, sentinel := range []error{ErrNotFound, ErrUnauthorized, ErrForbidden, ErrRateLimited, ErrServer, ErrTransport} {
+				for _, sentinel := range []error{ErrNotFound, ErrBadRequest, ErrUnauthorized, ErrForbidden, ErrRateLimited, ErrServer, ErrTransport} {
 					if errors.Is(err, sentinel) {
 						t.Errorf("status %d should not match %v, got %v", tc.status, sentinel, err)
 					}
@@ -2243,8 +2244,7 @@ func TestGetRoleByID_FallbackViaList(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/role/40632", "/v1/role/40633":
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"data":null,"success":false,"error":true,"message":"Not found","status":404}`))
+			writeAPIError(t, w, http.StatusNotFound, "Not found")
 			return
 		case "/v1/org/test-org/roles":
 			writeEnvelope(t, w, http.StatusOK, map[string]any{
@@ -4446,7 +4446,8 @@ func TestUpdateSiteResource_OmitsGrantLists(t *testing.T) {
 	}
 }
 
-func TestUpdateSiteResource_SendsNonEmptyGrantLists(t *testing.T) {
+func TestUpdateSiteResource_SendsGrantListsWhenSet(t *testing.T) {
+	// A non-nil list is sent as is; an empty one asks for "no grants".
 	var gotBody map[string]json.RawMessage
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -4455,15 +4456,39 @@ func TestUpdateSiteResource_SendsNonEmptyGrantLists(t *testing.T) {
 		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11})
 	})
 	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
-		Name: "db", SiteID: 5, RoleIDs: []int{3}, UserIDs: []string{"u1"}, ClientIDs: []int{7},
+		Name: "db", SiteID: 5, RoleIDs: &[]int{3}, UserIDs: &[]string{"u1"}, ClientIDs: &[]int{},
 	}); err != nil {
 		t.Fatalf("UpdateSiteResource: %v", err)
 	}
-	want := map[string]string{"roleIds": "[3]", "userIds": `["u1"]`, "clientIds": "[7]"}
+	want := map[string]string{"roleIds": "[3]", "userIds": `["u1"]`, "clientIds": "[]"}
 	for k, v := range want {
 		if string(gotBody[k]) != v {
 			t.Errorf("%s = %s, want %s", k, gotBody[k], v)
 		}
+	}
+}
+
+func TestUpdateSiteResource_SendsZeroValuedScalars(t *testing.T) {
+	// A missing key means "unchanged", so turning disable_icmp off or
+	// clearing a port range must send the zero value explicitly.
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11})
+	})
+	empty, off := "", false
+	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, TCPPortRange: &empty, DisableICMP: &off,
+	}); err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	if string(gotBody["tcpPortRangeString"]) != `""` || string(gotBody["disableIcmp"]) != "false" {
+		t.Errorf("zero values dropped: %v", gotBody)
+	}
+	if _, present := gotBody["udpPortRangeString"]; present {
+		t.Errorf("nil udpPortRangeString must be omitted, got %s", gotBody["udpPortRangeString"])
 	}
 }
 
@@ -4481,39 +4506,91 @@ func writeAPIError(t *testing.T, w http.ResponseWriter, status int, message stri
 	_, _ = w.Write(raw)
 }
 
-func TestUpdateSiteResource_RetriesWithGrantListsOnPre120Server(t *testing.T) {
-	// Pangolin <= 1.19 requires the three lists in the update body.
-	var bodies []map[string]json.RawMessage
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode: %v", err)
+const pre120MissingGrantListsMessage = `Validation error: Invalid input: expected array, received undefined at "userIds"; Invalid input: expected array, received undefined at "roleIds"; Invalid input: expected array, received undefined at "clientIds"`
+
+// pre120SiteResourceServer mimics a Pangolin <= 1.19 server: the update
+// requires the three grant lists, and the current grants are listed by
+// the sub-listing endpoints.
+func pre120SiteResourceServer(t *testing.T, posts *[]map[string]json.RawMessage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/site-resource/11/roles":
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"roles": []map[string]any{
+				{"roleId": 1, "name": "Admin", "isAdmin": true},
+				{"roleId": 4, "name": "dev", "isAdmin": false},
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/site-resource/11/users":
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"users": []map[string]any{{"userId": "u9"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/site-resource/11/clients":
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"clients": []map[string]any{{"clientId": 7}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/site-resource/11":
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			*posts = append(*posts, body)
+			for _, k := range []string{"roleIds", "userIds", "clientIds"} {
+				if _, ok := body[k]; !ok {
+					writeAPIError(t, w, http.StatusBadRequest, pre120MissingGrantListsMessage)
+					return
+				}
+			}
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11, "name": "db"})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		bodies = append(bodies, body)
-		if _, ok := body["roleIds"]; !ok {
-			writeAPIError(t, w, http.StatusBadRequest,
-				`Validation error: Invalid input: expected array, received undefined at "userIds"; Invalid input: expected array, received undefined at "roleIds"; Invalid input: expected array, received undefined at "clientIds"`)
-			return
-		}
-		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11, "name": "db"})
-	})
+	}
+}
+
+func TestUpdateSiteResource_RetriesWithCurrentGrantsOnPre120Server(t *testing.T) {
+	var posts []map[string]json.RawMessage
+	c := newTestClient(t, pre120SiteResourceServer(t, &posts))
 	got, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
 		Name: "db", SiteID: 5, Destination: "10.0.0.5",
 	})
 	if err != nil {
 		t.Fatalf("UpdateSiteResource: %v", err)
 	}
-	if len(bodies) != 2 || got.Name != "db" {
-		t.Fatalf("calls = %d, got %+v", len(bodies), got)
+	if len(posts) != 2 || got.Name != "db" {
+		t.Fatalf("posts = %d, got %+v", len(posts), got)
 	}
-	retry := bodies[1]
-	for _, k := range []string{"roleIds", "userIds", "clientIds"} {
-		if string(retry[k]) != "[]" {
-			t.Errorf("retry %s = %s, want []", k, retry[k])
+	retry := posts[1]
+	// The admin role is kept by the server itself and left out.
+	want := map[string]string{"roleIds": "[4]", "userIds": `["u9"]`, "clientIds": "[7]"}
+	for k, v := range want {
+		if string(retry[k]) != v {
+			t.Errorf("retry %s = %s, want %s", k, retry[k], v)
 		}
 	}
 	if string(retry["name"]) != `"db"` || string(retry["destination"]) != `"10.0.0.5"` || string(retry["siteId"]) != "5" {
 		t.Errorf("retry lost the scalars: %v", retry)
+	}
+
+	// The client remembers the server generation: the next update goes
+	// straight to the legacy body, without a failing POST first.
+	posts = nil
+	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{Name: "db", SiteID: 5}); err != nil {
+		t.Fatalf("second UpdateSiteResource: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Errorf("second update: %d posts, want 1", len(posts))
+	}
+}
+
+func TestUpdateSiteResource_Pre120KeepsCallerLists(t *testing.T) {
+	var posts []map[string]json.RawMessage
+	c := newTestClient(t, pre120SiteResourceServer(t, &posts))
+	if _, err := c.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, RoleIDs: &[]int{}, UserIDs: &[]string{"u1"},
+	}); err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	retry := posts[len(posts)-1]
+	want := map[string]string{"roleIds": "[]", "userIds": `["u1"]`, "clientIds": "[7]"}
+	for k, v := range want {
+		if string(retry[k]) != v {
+			t.Errorf("retry %s = %s, want %s", k, retry[k], v)
+		}
 	}
 }
 
@@ -4523,6 +4600,7 @@ func TestUpdateSiteResource_NoRetryOnOtherErrors(t *testing.T) {
 		message string
 	}{
 		{http.StatusBadRequest, "Destination must be a valid IP address or valid domain AND alias is required"},
+		{http.StatusBadRequest, `Validation error: Invalid input: expected number, received string at "roleIds[0]"`},
 		{http.StatusConflict, `Alias already in use by another site resource ("roleIds" unrelated)`},
 	} {
 		calls := 0
