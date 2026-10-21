@@ -202,7 +202,8 @@ func (d *HealthChecksDataSource) Read(ctx context.Context, req datasource.ReadRe
 }
 
 // healthCheckItemFromAPI maps one row. An empty hcHealth reads as
-// `unknown`, like on pangolin_health_check.
+// `unknown`, and empty hostname / path / scheme / tls_server_name read
+// as null, like on pangolin_health_check.
 func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
 	health := hc.HCHealth
 	if health == "" {
@@ -221,10 +222,10 @@ func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
 		Enabled:            types.BoolValue(hc.HCEnabled),
 		Health:             types.StringValue(health),
 		Mode:               tfconv.StringFromPtr(hc.HCMode),
-		Hostname:           tfconv.StringFromPtr(hc.HCHostname),
+		Hostname:           healthCheckNonEmpty(hc.HCHostname),
 		Port:               tfconv.Int64FromIntPtr(hc.HCPort),
-		Path:               tfconv.StringFromPtr(hc.HCPath),
-		Scheme:             tfconv.StringFromPtr(hc.HCScheme),
+		Path:               healthCheckNonEmpty(hc.HCPath),
+		Scheme:             healthCheckNonEmpty(hc.HCScheme),
 		Method:             tfconv.StringFromPtr(hc.HCMethod),
 		Interval:           tfconv.Int64FromIntPtr(hc.HCInterval),
 		UnhealthyInterval:  tfconv.Int64FromIntPtr(hc.HCUnhealthyInterval),
@@ -232,8 +233,17 @@ func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
 		Headers:            decodeTargetHCHeaders(hc.HCHeaders),
 		FollowRedirects:    tfconv.BoolFromPtr(hc.HCFollowRedirects),
 		Status:             tfconv.Int64FromIntPtr(hc.HCStatus),
-		TLSServerName:      tfconv.StringFromPtr(hc.HCTLSServerName),
+		TLSServerName:      healthCheckNonEmpty(hc.HCTLSServerName),
 		HealthyThreshold:   tfconv.Int64FromIntPtr(hc.HCHealthyThreshold),
 		UnhealthyThreshold: tfconv.Int64FromIntPtr(hc.HCUnhealthyThreshold),
 	}
+}
+
+// healthCheckNonEmpty maps nil and "" to null: pangolin_health_check
+// clears optional strings by sending "".
+func healthCheckNonEmpty(p *string) types.String {
+	if p == nil || *p == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(*p)
 }

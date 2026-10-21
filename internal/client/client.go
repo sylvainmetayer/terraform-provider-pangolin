@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -163,10 +164,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return lastResp, lastErr
 }
 
-// doRequestNoRetry performs a single attempt with no retry, whatever the
-// method. Pangolin creates most objects with PUT, which doRequest
-// retries: replaying a create whose response was lost (connection reset,
-// proxy 502) would leave a duplicate on the server.
+// doRequestNoRetry sends a non-idempotent request. Pangolin creates most
+// objects with PUT, which doRequest retries: replaying a create whose
+// response was lost (connection reset, proxy 502) would leave a duplicate
+// on the server. Only failures proving the server did not process the
+// request are retried: HTTP 429 and a connection that was never opened.
 func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
 	var bodyBytes []byte
 	if body != nil {
@@ -176,7 +178,39 @@ func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body
 		}
 		bodyBytes = b
 	}
-	return c.doRequestOnce(ctx, method, path, bodyBytes)
+
+	var (
+		lastResp *APIResponse
+		lastErr  error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return lastResp, ctx.Err()
+			case <-time.After(backoffDelay(attempt - 1)):
+			}
+		}
+
+		lastResp, lastErr = c.doRequestOnce(ctx, method, path, bodyBytes)
+		if !shouldRetryUnsent(lastErr) {
+			return lastResp, lastErr
+		}
+	}
+	return lastResp, lastErr
+}
+
+// shouldRetryUnsent reports whether err proves the request never reached
+// the server's handler: a 429 rate limit, or a dial failure.
+func shouldRetryUnsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrRateLimited) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
@@ -1126,17 +1160,24 @@ var ErrHealthChecksUnavailable = errors.New("pangolin: health check routes unava
 // GET route, so this walks [Client.ListHealthChecks] and returns
 // [ErrNotFound] when no row matches, or [ErrHealthChecksUnavailable]
 // when the list route answers 404.
+//
+// The list is paged newest-first by offset, so a row deleted on an
+// earlier page during the walk shifts the next page and can skip a
+// row. A miss is therefore confirmed with a second walk before
+// returning ErrNotFound.
 func (c *Client) GetHealthCheck(ctx context.Context, healthCheckID int) (*HealthCheck, error) {
-	checks, err := c.ListHealthChecks(ctx, nil)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("list health checks: %s: %w", err.Error(), ErrHealthChecksUnavailable)
+	for attempt := 0; attempt < 2; attempt++ {
+		checks, err := c.ListHealthChecks(ctx, nil)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, fmt.Errorf("list health checks: %s: %w", err.Error(), ErrHealthChecksUnavailable)
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	for i := range checks {
-		if checks[i].HealthCheckID == healthCheckID {
-			return &checks[i], nil
+		for i := range checks {
+			if checks[i].HealthCheckID == healthCheckID {
+				return &checks[i], nil
+			}
 		}
 	}
 	return nil, ErrNotFound
@@ -1159,6 +1200,9 @@ func (c *Client) CreateHealthCheck(ctx context.Context, req *HealthCheckRequest)
 	}
 	if err := json.Unmarshal(resp.Data, &out); err != nil {
 		return 0, fmt.Errorf("failed to parse health check: %w", err)
+	}
+	if out.HealthCheckID <= 0 {
+		return 0, fmt.Errorf("health check create response has no targetHealthCheckId: %s", truncateForDiag(resp.Data))
 	}
 	return out.HealthCheckID, nil
 }

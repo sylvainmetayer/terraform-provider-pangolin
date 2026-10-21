@@ -68,6 +68,39 @@ func TestHealthCheckToModel_FullPayload(t *testing.T) {
 	}
 }
 
+func TestHealthCheckToModel_NullDefaultsKeepPriorOrDefault(t *testing.T) {
+	// The defaulted columns are nullable upstream. A null from the
+	// server falls back to the schema default without a prior value
+	// (import), and keeps the prior value otherwise.
+	hc := &client.HealthCheck{HealthCheckID: 7, Name: "n", SiteID: intPtr(1)}
+
+	m := healthCheckToModel(hc, HealthCheckResourceModel{})
+	if m.Mode.ValueString() != "http" || m.Method.ValueString() != "GET" ||
+		m.Interval.ValueInt64() != 30 || m.UnhealthyInterval.ValueInt64() != 30 ||
+		m.Timeout.ValueInt64() != 5 || !m.FollowRedirects.ValueBool() ||
+		m.HealthyThreshold.ValueInt64() != 1 || m.UnhealthyThreshold.ValueInt64() != 1 {
+		t.Errorf("defaults not applied: %+v", m)
+	}
+
+	prior := HealthCheckResourceModel{
+		Mode:               types.StringValue("tcp"),
+		Method:             types.StringValue("HEAD"),
+		Interval:           types.Int64Value(60),
+		UnhealthyInterval:  types.Int64Value(15),
+		Timeout:            types.Int64Value(9),
+		FollowRedirects:    types.BoolValue(false),
+		HealthyThreshold:   types.Int64Value(2),
+		UnhealthyThreshold: types.Int64Value(4),
+	}
+	m = healthCheckToModel(hc, prior)
+	if m.Mode != prior.Mode || m.Method != prior.Method || m.Interval != prior.Interval ||
+		m.UnhealthyInterval != prior.UnhealthyInterval || m.Timeout != prior.Timeout ||
+		m.FollowRedirects != prior.FollowRedirects || m.HealthyThreshold != prior.HealthyThreshold ||
+		m.UnhealthyThreshold != prior.UnhealthyThreshold {
+		t.Errorf("prior values not kept: %+v", m)
+	}
+}
+
 func TestHealthCheckToModel_EmptyStringsReadAsNull(t *testing.T) {
 	// The update path clears optional strings by sending "", which the
 	// server stores and echoes back.

@@ -1536,6 +1536,30 @@ func TestGetHealthCheck_NotFoundWhenMissing(t *testing.T) {
 	}
 }
 
+func TestGetHealthCheck_ConfirmsMissWithSecondWalk(t *testing.T) {
+	// The first walk misses the row (a concurrent delete shifted the
+	// page); the second walk sees it.
+	walks := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		walks++
+		rows := []map[string]any{healthCheckRow(9, "other")}
+		if walks > 1 {
+			rows = append(rows, healthCheckRow(5, "a"))
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"healthChecks": rows,
+			"pagination":   map[string]any{"total": len(rows)},
+		})
+	})
+	hc, err := c.GetHealthCheck(context.Background(), 5)
+	if err != nil || hc.Name != "a" {
+		t.Fatalf("GetHealthCheck(5) = %+v, %v", hc, err)
+	}
+	if walks != 2 {
+		t.Errorf("walks = %d, want 2", walks)
+	}
+}
+
 func TestListHealthChecks_OSSAnswers404(t *testing.T) {
 	disableRetryBackoff(t)
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1637,6 +1661,16 @@ func TestCreateHealthCheck_BodyAndID(t *testing.T) {
 		if _, ok := gotBody[k]; ok {
 			t.Errorf("body should not contain %q (left unset)", k)
 		}
+	}
+}
+
+func TestCreateHealthCheck_MissingIDIsAnError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusCreated, map[string]any{"healthCheckId": 42})
+	})
+	name, site := "db", 4
+	if _, err := c.CreateHealthCheck(context.Background(), &HealthCheckRequest{Name: &name, SiteID: &site}); err == nil {
+		t.Error("want an error when the response carries no targetHealthCheckId")
 	}
 }
 

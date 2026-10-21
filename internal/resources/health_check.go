@@ -414,9 +414,31 @@ func (r *HealthCheckResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	err := r.client.DeleteHealthCheck(ctx, int(state.ID.ValueInt64()))
-	if err != nil && !errors.Is(err, client.ErrNotFound) {
+	id := int(state.ID.ValueInt64())
+	err := r.client.DeleteHealthCheck(ctx, id)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete health check", err.Error())
+		return
+	}
+	// DELETE answers 404 for a row already gone, but also for a missing
+	// route (OSS build, wrong org) and for a target-attached probe. Only
+	// a successful list without the row confirms it is gone.
+	hc, lookupErr := r.client.GetHealthCheck(ctx, id)
+	switch {
+	case errors.Is(lookupErr, client.ErrNotFound):
+		return
+	case lookupErr != nil:
+		resp.Diagnostics.AddError("Failed to delete health check", healthCheckErrorDetail(lookupErr))
+	case hc.ResourceID != nil:
+		resp.Diagnostics.AddError("Failed to delete health check",
+			fmt.Sprintf("%s. Health check %d is attached to a target of resource %d and cannot be deleted here.",
+				err.Error(), id, *hc.ResourceID))
+	default:
+		resp.Diagnostics.AddError("Failed to delete health check",
+			fmt.Sprintf("%s. Health check %d still exists after the delete was refused.", err.Error(), id))
 	}
 }
 
@@ -429,6 +451,11 @@ func (r *HealthCheckResource) ImportState(ctx context.Context, req resource.Impo
 
 	hc, err := r.client.GetHealthCheck(ctx, int(id))
 	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			resp.Diagnostics.AddError("Failed to import health check",
+				fmt.Sprintf("No health check with ID %d in the provider organization.", id))
+			return
+		}
 		resp.Diagnostics.AddError("Failed to import health check", healthCheckErrorDetail(err))
 		return
 	}
@@ -438,7 +465,8 @@ func (r *HealthCheckResource) ImportState(ctx context.Context, req resource.Impo
 				"`hc_*` attributes of `pangolin_target` instead.", id, *hc.ResourceID))
 		return
 	}
-	if mode := tfconv.StringFromPtr(hc.HCMode).ValueString(); mode != "http" && mode != "tcp" {
+	// A null hcMode is run as http by Newt and maps to the http default.
+	if mode := tfconv.StringFromPtr(hc.HCMode).ValueString(); hc.HCMode != nil && mode != "http" && mode != "tcp" {
 		resp.Diagnostics.AddError("Unsupported health check mode",
 			fmt.Sprintf("Health check %d uses mode %q. Pangolin 1.24 does not implement it (Newt runs it as "+
 				"`http`), so this provider only manages `http` and `tcp` probes.", id, mode))
@@ -449,16 +477,20 @@ func (r *HealthCheckResource) ImportState(ctx context.Context, req resource.Impo
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// healthCheckErrorDetail adds an Enterprise hint to 404s: the OSS
-// build has no health-check routes at all.
+// healthCheckErrorDetail adds an Enterprise hint when a route is
+// missing: the OSS build has no health-check routes at all. A plain
+// ErrNotFound from a write (create, update, delete) can mean the same
+// thing or a missing row, so it gets a hint naming both causes. Read
+// and import paths get ErrNotFound only once the list route answered,
+// and handle it before calling this.
 func healthCheckErrorDetail(err error) string {
 	if errors.Is(err, client.ErrHealthChecksUnavailable) {
 		return err.Error() + ". Standalone health checks require Pangolin Enterprise Edition; " +
 			"also check the provider organization."
 	}
 	if errors.Is(err, client.ErrNotFound) {
-		return err.Error() + ". Standalone health checks require Pangolin Enterprise Edition; " +
-			"also check that the health check exists in the provider organization."
+		return err.Error() + ". Either the health check does not exist in the provider organization, " +
+			"or the server is not Pangolin Enterprise Edition."
 	}
 	return err.Error()
 }
@@ -572,26 +604,58 @@ func healthCheckToModel(hc *client.HealthCheck, prior HealthCheckResourceModel) 
 		health = "unknown"
 	}
 
+	// Attributes with a schema default are nullable columns upstream (the
+	// default lives in the DB). A null from the server keeps the prior
+	// value, or the schema default, so the state never drops to null
+	// against a planned default.
+	strOr := func(p *string, prior types.String, def string) types.String {
+		if p != nil {
+			return types.StringValue(*p)
+		}
+		if !prior.IsNull() && !prior.IsUnknown() {
+			return prior
+		}
+		return types.StringValue(def)
+	}
+	intOr := func(p *int, prior types.Int64, def int64) types.Int64 {
+		if p != nil {
+			return types.Int64Value(int64(*p))
+		}
+		if !prior.IsNull() && !prior.IsUnknown() {
+			return prior
+		}
+		return types.Int64Value(def)
+	}
+	boolOr := func(p *bool, prior types.Bool, def bool) types.Bool {
+		if p != nil {
+			return types.BoolValue(*p)
+		}
+		if !prior.IsNull() && !prior.IsUnknown() {
+			return prior
+		}
+		return types.BoolValue(def)
+	}
+
 	return HealthCheckResourceModel{
 		ID:                 types.Int64Value(int64(hc.HealthCheckID)),
 		Name:               types.StringValue(hc.Name),
 		SiteID:             tfconv.Int64FromIntPtr(hc.SiteID),
 		Enabled:            types.BoolValue(hc.HCEnabled),
-		Mode:               tfconv.StringFromPtr(hc.HCMode),
+		Mode:               strOr(hc.HCMode, prior.Mode, "http"),
 		Hostname:           nonEmpty(hc.HCHostname),
 		Port:               tfconv.Int64FromIntPtr(hc.HCPort),
 		Path:               nonEmpty(hc.HCPath),
 		Scheme:             nonEmpty(hc.HCScheme),
-		Method:             tfconv.StringFromPtr(hc.HCMethod),
-		Interval:           tfconv.Int64FromIntPtr(hc.HCInterval),
-		UnhealthyInterval:  tfconv.Int64FromIntPtr(hc.HCUnhealthyInterval),
-		Timeout:            tfconv.Int64FromIntPtr(hc.HCTimeout),
+		Method:             strOr(hc.HCMethod, prior.Method, "GET"),
+		Interval:           intOr(hc.HCInterval, prior.Interval, 30),
+		UnhealthyInterval:  intOr(hc.HCUnhealthyInterval, prior.UnhealthyInterval, 30),
+		Timeout:            intOr(hc.HCTimeout, prior.Timeout, 5),
 		Headers:            hcHeaders,
-		FollowRedirects:    tfconv.BoolFromPtr(hc.HCFollowRedirects),
+		FollowRedirects:    boolOr(hc.HCFollowRedirects, prior.FollowRedirects, true),
 		Status:             tfconv.Int64FromIntPtr(hc.HCStatus),
 		TLSServerName:      nonEmpty(hc.HCTLSServerName),
-		HealthyThreshold:   tfconv.Int64FromIntPtr(hc.HCHealthyThreshold),
-		UnhealthyThreshold: tfconv.Int64FromIntPtr(hc.HCUnhealthyThreshold),
+		HealthyThreshold:   intOr(hc.HCHealthyThreshold, prior.HealthyThreshold, 1),
+		UnhealthyThreshold: intOr(hc.HCUnhealthyThreshold, prior.UnhealthyThreshold, 1),
 		Health:             types.StringValue(health),
 	}
 }
