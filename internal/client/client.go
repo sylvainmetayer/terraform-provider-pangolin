@@ -921,6 +921,264 @@ func (c *Client) DeleteTarget(ctx context.Context, targetID int) error {
 	return err
 }
 
+// --- Standalone Health Checks (Enterprise) ---
+
+// HealthCheck is one row of GET /org/{org}/health-checks. Standalone
+// health checks live in the same `targetHealthCheck` table as the
+// probes attached to targets: standalone rows have no target, so the
+// Resource* fields are null for them and set for target-attached
+// rows. Nullable upstream fields use pointer types.
+//
+// Wire quirk: unlike targets, hcHeaders is a JSON-encoded string on
+// both the request and the response bodies (e.g.
+// `"[{\"name\":\"X-Probe\",\"value\":\"yes\"}]"`). Decode it with
+// [ParseTargetHCHeaders].
+type HealthCheck struct {
+	HealthCheckID        int     `json:"targetHealthCheckId"`
+	Name                 string  `json:"name"`
+	SiteID               *int    `json:"siteId"`
+	SiteName             *string `json:"siteName"`
+	SiteNiceID           *string `json:"siteNiceId"`
+	HCEnabled            bool    `json:"hcEnabled"`
+	HCHealth             string  `json:"hcHealth"`
+	HCMode               *string `json:"hcMode"`
+	HCHostname           *string `json:"hcHostname"`
+	HCPort               *int    `json:"hcPort"`
+	HCPath               *string `json:"hcPath"`
+	HCScheme             *string `json:"hcScheme"`
+	HCMethod             *string `json:"hcMethod"`
+	HCInterval           *int    `json:"hcInterval"`
+	HCUnhealthyInterval  *int    `json:"hcUnhealthyInterval"`
+	HCTimeout            *int    `json:"hcTimeout"`
+	HCHeaders            *string `json:"hcHeaders"`
+	HCFollowRedirects    *bool   `json:"hcFollowRedirects"`
+	HCStatus             *int    `json:"hcStatus"`
+	HCTLSServerName      *string `json:"hcTlsServerName"`
+	HCHealthyThreshold   *int    `json:"hcHealthyThreshold"`
+	HCUnhealthyThreshold *int    `json:"hcUnhealthyThreshold"`
+	ResourceID           *int    `json:"resourceId"`
+	ResourceName         *string `json:"resourceName"`
+	ResourceNiceID       *string `json:"resourceNiceId"`
+}
+
+// HealthCheckRequest is the body of both PUT /org/{org}/health-check
+// (create) and POST /org/{org}/health-check/{id} (update). Both
+// schemas are strict: unknown keys are rejected with a 400.
+//
+// HCHeaders and HCStatus have no omitempty: the server accepts null
+// for both, so a nil pointer is sent as an explicit `null` and clears
+// the stored value on update. The other optional fields cannot be
+// nulled on update (the schema only accepts a value), so they are
+// omitted when nil and the server keeps its stored value.
+type HealthCheckRequest struct {
+	Name                 *string `json:"name,omitempty"`
+	SiteID               *int    `json:"siteId,omitempty"`
+	HCEnabled            *bool   `json:"hcEnabled,omitempty"`
+	HCMode               *string `json:"hcMode,omitempty"`
+	HCHostname           *string `json:"hcHostname,omitempty"`
+	HCPort               *int    `json:"hcPort,omitempty"`
+	HCPath               *string `json:"hcPath,omitempty"`
+	HCScheme             *string `json:"hcScheme,omitempty"`
+	HCMethod             *string `json:"hcMethod,omitempty"`
+	HCInterval           *int    `json:"hcInterval,omitempty"`
+	HCUnhealthyInterval  *int    `json:"hcUnhealthyInterval,omitempty"`
+	HCTimeout            *int    `json:"hcTimeout,omitempty"`
+	HCHeaders            *string `json:"hcHeaders"`
+	HCFollowRedirects    *bool   `json:"hcFollowRedirects,omitempty"`
+	HCStatus             *int    `json:"hcStatus"`
+	HCTLSServerName      *string `json:"hcTlsServerName,omitempty"`
+	HCHealthyThreshold   *int    `json:"hcHealthyThreshold,omitempty"`
+	HCUnhealthyThreshold *int    `json:"hcUnhealthyThreshold,omitempty"`
+}
+
+// ListHealthChecksOptions narrows GET /org/{org}/health-checks. Zero
+// values mean "no filter". Paging is handled by [Client.ListHealthChecks].
+type ListHealthChecksOptions struct {
+	// Query is a case-insensitive substring match on the name.
+	Query string
+	// Mode filters by probe mode. The server accepts `http`, `tcp`,
+	// `snmp` and `ping`.
+	Mode   string
+	SiteID int
+	// ResourceID keeps the probes attached to a target of this
+	// resource (target-attached rows only).
+	ResourceID int
+	// Health is one of `healthy`, `unhealthy`, `unknown`.
+	Health  string
+	Enabled *bool
+}
+
+// healthCheckPageSize is the page size used to walk the health-check
+// list. The server default is 1000 and it enforces no maximum.
+var healthCheckPageSize = 1000
+
+// ListHealthChecks returns every health check of the provider org
+// matching opts, walking the limit/offset pagination until the
+// reported total is reached. The list also carries the probes
+// attached to targets (see [HealthCheck]).
+//
+// The route only exists on Pangolin Enterprise: the OSS build answers
+// 404 (surfaced as [ErrNotFound]).
+func (c *Client) ListHealthChecks(ctx context.Context, opts *ListHealthChecksOptions) ([]HealthCheck, error) {
+	params := url.Values{}
+	if opts != nil {
+		if opts.Query != "" {
+			params.Set("query", opts.Query)
+		}
+		if opts.Mode != "" {
+			params.Set("hcMode", opts.Mode)
+		}
+		if opts.SiteID > 0 {
+			params.Set("siteId", strconv.Itoa(opts.SiteID))
+		}
+		if opts.ResourceID > 0 {
+			params.Set("resourceId", strconv.Itoa(opts.ResourceID))
+		}
+		if opts.Health != "" {
+			params.Set("hcHealth", opts.Health)
+		}
+		if opts.Enabled != nil {
+			params.Set("hcEnabled", strconv.FormatBool(*opts.Enabled))
+		}
+	}
+	params.Set("limit", strconv.Itoa(healthCheckPageSize))
+
+	out := []HealthCheck{}
+	for offset := 0; ; {
+		params.Set("offset", strconv.Itoa(offset))
+		path := fmt.Sprintf("/org/%s/health-checks?%s", c.OrgID, params.Encode())
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			HealthChecks []HealthCheck `json:"healthChecks"`
+			Pagination   struct {
+				Total int `json:"total"`
+			} `json:"pagination"`
+		}
+		if err := json.Unmarshal(resp.Data, &page); err != nil {
+			return nil, fmt.Errorf("failed to parse health checks: %w", err)
+		}
+		out = append(out, page.HealthChecks...)
+		offset += len(page.HealthChecks)
+		if len(page.HealthChecks) == 0 || offset >= page.Pagination.Total {
+			return out, nil
+		}
+	}
+}
+
+// GetHealthCheck looks a health check up by ID. There is no per-id
+// GET route, so this walks [Client.ListHealthChecks] and returns
+// [ErrNotFound] when no row matches.
+func (c *Client) GetHealthCheck(ctx context.Context, healthCheckID int) (*HealthCheck, error) {
+	checks, err := c.ListHealthChecks(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	for i := range checks {
+		if checks[i].HealthCheckID == healthCheckID {
+			return &checks[i], nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// CreateHealthCheck creates a standalone health check and returns its
+// ID. The create response carries only `targetHealthCheckId`; read
+// the full row back with [Client.GetHealthCheck].
+func (c *Client) CreateHealthCheck(ctx context.Context, req *HealthCheckRequest) (int, error) {
+	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/health-check", c.OrgID), req)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		HealthCheckID int `json:"targetHealthCheckId"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return 0, fmt.Errorf("failed to parse health check: %w", err)
+	}
+	return out.HealthCheckID, nil
+}
+
+// UpdateHealthCheck updates a standalone health check. Only the keys
+// present in req are changed (see [HealthCheckRequest]). The response
+// is the updated row without the site and resource enrichments.
+func (c *Client) UpdateHealthCheck(ctx context.Context, healthCheckID int, req *HealthCheckRequest) (*HealthCheck, error) {
+	resp, err := c.doRequest(ctx, "POST", fmt.Sprintf("/org/%s/health-check/%d", c.OrgID, healthCheckID), req)
+	if err != nil {
+		return nil, err
+	}
+	var hc HealthCheck
+	if err := json.Unmarshal(resp.Data, &hc); err != nil {
+		return nil, fmt.Errorf("failed to parse health check: %w", err)
+	}
+	return &hc, nil
+}
+
+// DeleteHealthCheck deletes a standalone health check. Probes attached
+// to a target cannot be deleted here (the server answers 404).
+func (c *Client) DeleteHealthCheck(ctx context.Context, healthCheckID int) error {
+	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/org/%s/health-check/%d", c.OrgID, healthCheckID), nil)
+	return err
+}
+
+// HealthCheckDowntimeWindow is one outage window inside a status
+// history day. End is nil while the outage is still ongoing. Start
+// and End are epoch seconds.
+type HealthCheckDowntimeWindow struct {
+	Start  int64  `json:"start"`
+	End    *int64 `json:"end"`
+	Status string `json:"status"`
+}
+
+// HealthCheckStatusDay is one daily bucket of the status history.
+// Status is one of `good`, `degraded`, `bad`, `no_data`, `unknown`.
+type HealthCheckStatusDay struct {
+	Date                 string                      `json:"date"`
+	UptimePercent        float64                     `json:"uptimePercent"`
+	TotalDowntimeSeconds float64                     `json:"totalDowntimeSeconds"`
+	DowntimeWindows      []HealthCheckDowntimeWindow `json:"downtimeWindows"`
+	Status               string                      `json:"status"`
+}
+
+// HealthCheckStatusHistory is the body of
+// GET /org/{org}/health-check/{id}/status-history.
+type HealthCheckStatusHistory struct {
+	EntityType           string                 `json:"entityType"`
+	EntityID             int                    `json:"entityId"`
+	Days                 []HealthCheckStatusDay `json:"days"`
+	OverallUptimePercent float64                `json:"overallUptimePercent"`
+	TotalDowntimeSeconds float64                `json:"totalDowntimeSeconds"`
+}
+
+// GetHealthCheckStatusHistory returns the daily uptime buckets of a
+// health check. days (1-365, server default 90) and tzOffsetMinutes
+// (-720..840, minutes added to UTC to anchor the day boundaries,
+// server default 0) are sent only when non-nil.
+func (c *Client) GetHealthCheckStatusHistory(ctx context.Context, healthCheckID int, days, tzOffsetMinutes *int) (*HealthCheckStatusHistory, error) {
+	path := fmt.Sprintf("/org/%s/health-check/%d/status-history", c.OrgID, healthCheckID)
+	params := url.Values{}
+	if days != nil {
+		params.Set("days", strconv.Itoa(*days))
+	}
+	if tzOffsetMinutes != nil {
+		params.Set("tzOffsetMinutes", strconv.Itoa(*tzOffsetMinutes))
+	}
+	if enc := params.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	resp, err := c.doRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out HealthCheckStatusHistory
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse health check status history: %w", err)
+	}
+	return &out, nil
+}
+
 // --- Site Resources (private) ---
 
 // SiteResource represents a private site resource.
