@@ -36,11 +36,14 @@ var (
 const siteResourceModeGateway = "gateway"
 
 const (
-	gatewayDestination  = "0.0.0.0/0"
-	gatewayPortRange    = "*"
-	gatewayDisableICMP  = false
-	gatewayForcedNotice = "Pangolin forces this value for `mode = \"gateway\"`; leave the attribute unset."
+	gatewayDestination = "0.0.0.0/0"
+	gatewayPortRange   = "*"
+	gatewayDisableICMP = false
 )
+
+// httpTCPPortRange is the TCP port range the server forces when it
+// creates an http site resource.
+const httpTCPPortRange = "443,80"
 
 // SitePrivateResource defines the resource implementation.
 type SitePrivateResource struct {
@@ -158,7 +161,7 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"tcp_port_range": schema.StringAttribute{
-				Description: "TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server auto-assigns `\"443,80\"` and ignores any value set here; for `mode = gateway` it forces `\"*\"`.",
+				Description: "TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server forces `\"443,80\"` and for `mode = gateway` it forces `\"*\"`; any other value is rejected in those modes.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -167,7 +170,7 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"udp_port_range": schema.StringAttribute{
-				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `\"*\"`.",
+				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = http` the server forces `\"\"` and for `mode = gateway` it forces `\"*\"`; any other value is rejected in those modes.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -176,7 +179,7 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"disable_icmp": schema.BoolAttribute{
-				Description: "Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes and `true` for `mode = http`, and forces `false` for `mode = gateway`; leaving this unset lets the server pick.",
+				Description: "Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes, forces `true` for `mode = http` and `false` for `mode = gateway` (any other value is rejected in those two modes); leaving this unset lets the server pick.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
@@ -403,12 +406,14 @@ func (r *SitePrivateResource) ImportState(ctx context.Context, req resource.Impo
 
 // createSiteResourceErrorDetail adds a version hint to a create error
 // in gateway mode: a pre-1.24 server rejects the mode itself with a
-// generic 400 ("Invalid option: expected one of ... at \"mode\"").
-// Other 400s (duplicate name, bad site_id) name another field and get
-// no hint.
+// validation error ("Invalid option: expected one of ... at \"mode\"").
+// Errors that name another field (duplicate name, bad site_id) get no
+// hint. Only the field name is matched, not the client's status
+// formatting; once client.ErrBadRequest exists (#1), this should also
+// require errors.Is(err, client.ErrBadRequest).
 func createSiteResourceErrorDetail(mode string, err error) string {
 	detail := err.Error()
-	if mode == siteResourceModeGateway && strings.Contains(detail, "(status 400)") && strings.Contains(detail, `"mode"`) {
+	if mode == siteResourceModeGateway && strings.Contains(detail, `"mode"`) {
 		detail += "\n\n`mode = \"gateway\"` requires Pangolin 1.24 or later: an older server " +
 			"rejects the mode with a validation error on `mode`."
 	}
@@ -417,7 +422,8 @@ func createSiteResourceErrorDetail(mode string, err error) string {
 
 // buildCreateSiteResourceRequest maps the plan to the create payload.
 // In gateway mode the server-forced attributes are left off the body
-// (an empty `destination` would fail its validation).
+// (an empty `destination` would fail its validation). disable_icmp is
+// always planned false there, which the omitempty tag already drops.
 func buildCreateSiteResourceRequest(plan SitePrivateResourceModel) *client.CreateSiteResourceRequest {
 	req := &client.CreateSiteResourceRequest{
 		Name:            plan.Name.ValueString(),
@@ -442,7 +448,6 @@ func buildCreateSiteResourceRequest(plan SitePrivateResourceModel) *client.Creat
 		req.Destination = ""
 		req.TCPPortRange = ""
 		req.UDPPortRange = ""
-		req.DisableICMP = false
 	}
 	return req
 }
@@ -474,7 +479,6 @@ func buildUpdateSiteResourceRequest(plan SitePrivateResourceModel) *client.Updat
 		req.Destination = ""
 		req.TCPPortRange = ""
 		req.UDPPortRange = ""
-		req.DisableICMP = false
 	}
 	return req
 }
@@ -495,13 +499,35 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 		return
 	}
 
-	switch cfg.Mode.ValueString() {
+	mode := cfg.Mode.ValueString()
+	checkString := func(attr string, v types.String, forced string) {
+		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
+			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %q.", mode, forced))
+		}
+	}
+	checkBool := func(attr string, v types.Bool, forced bool) {
+		if !v.IsNull() && !v.IsUnknown() && v.ValueBool() != forced {
+			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %t.", mode, forced))
+		}
+	}
+
+	switch mode {
 	case siteResourceModeGateway:
 		// checked below
 	case "host", "cidr", "http":
 		if cfg.Destination.IsNull() {
 			resp.Diagnostics.AddAttributeError(path.Root("destination"), "Missing destination",
-				fmt.Sprintf("`destination` is required when `mode = %q`.", cfg.Mode.ValueString()))
+				fmt.Sprintf("`destination` is required when `mode = %q`.", mode))
+		}
+		if mode == "http" {
+			// The create handler forces these for an http resource
+			// (tcp "443,80" since 1.20, udp "" and ICMP disabled), so
+			// any other configured value ends in an inconsistent result.
+			checkString("tcp_port_range", cfg.TCPPortRange, httpTCPPortRange)
+			checkString("udp_port_range", cfg.UDPPortRange, "")
+			checkBool("disable_icmp", cfg.DisableICMP, true)
 		}
 		return
 	default:
@@ -509,19 +535,10 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 		return
 	}
 
-	checkString := func(attr string, v types.String, forced string) {
-		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
-			resp.Diagnostics.AddAttributeError(path.Root(attr), "Value overridden in gateway mode",
-				fmt.Sprintf("%s The server sets %q.", gatewayForcedNotice, forced))
-		}
-	}
 	checkString("destination", cfg.Destination, gatewayDestination)
 	checkString("tcp_port_range", cfg.TCPPortRange, gatewayPortRange)
 	checkString("udp_port_range", cfg.UDPPortRange, gatewayPortRange)
-	if !cfg.DisableICMP.IsNull() && !cfg.DisableICMP.IsUnknown() && cfg.DisableICMP.ValueBool() {
-		resp.Diagnostics.AddAttributeError(path.Root("disable_icmp"), "Value overridden in gateway mode",
-			fmt.Sprintf("%s The server sets %t.", gatewayForcedNotice, gatewayDisableICMP))
-	}
+	checkBool("disable_icmp", cfg.DisableICMP, gatewayDisableICMP)
 
 	// Attributes a gateway resource has no use for: the server would
 	// store them silently, so refuse them rather than pretend they do
@@ -540,55 +557,55 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 	unused("destination_port", !cfg.DestinationPort.IsNull() && !cfg.DestinationPort.IsUnknown())
 }
 
-// gatewayForcedStringModifier plans the value the server forces in
-// gateway mode, so the plan shows it instead of "(known after apply)",
-// and an in-place update re-plans it even if the state drifted from it
-// (the update body then names the mode, and the server re-forces it).
+// gatewayForcedModifier plans the value the server forces in gateway
+// mode, so the plan shows it instead of "(known after apply)", and an
+// in-place update re-plans it even if the state drifted from it (the
+// update body then names the mode, and the server re-forces it).
 // A replacement into gateway mode is re-planned by Terraform with a
 // null prior state, so UseStateForUnknown cannot carry the previous
-// mode's value over in that case.
-type gatewayForcedStringModifier struct{ value string }
+// mode's value over in that case. One type serves the string and the
+// bool attributes: only the field matching the attribute is set.
+type gatewayForcedModifier struct {
+	str types.String
+	b   types.Bool
+}
 
 func gatewayForcedString(value string) planmodifier.String {
-	return gatewayForcedStringModifier{value: value}
+	return gatewayForcedModifier{str: types.StringValue(value)}
 }
-
-func (m gatewayForcedStringModifier) Description(_ context.Context) string {
-	return fmt.Sprintf("Set to %q when mode is gateway.", m.value)
-}
-
-func (m gatewayForcedStringModifier) MarkdownDescription(ctx context.Context) string {
-	return m.Description(ctx)
-}
-
-func (m gatewayForcedStringModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
-	if req.Plan.Raw.IsNull() || !req.ConfigValue.IsNull() || !planIsGatewayMode(ctx, req.Plan, &resp.Diagnostics) {
-		return
-	}
-	resp.PlanValue = types.StringValue(m.value)
-}
-
-// gatewayForcedBoolModifier is the bool counterpart of
-// gatewayForcedStringModifier.
-type gatewayForcedBoolModifier struct{ value bool }
 
 func gatewayForcedBool(value bool) planmodifier.Bool {
-	return gatewayForcedBoolModifier{value: value}
+	return gatewayForcedModifier{b: types.BoolValue(value)}
 }
 
-func (m gatewayForcedBoolModifier) Description(_ context.Context) string {
-	return fmt.Sprintf("Set to %t when mode is gateway.", m.value)
+func (m gatewayForcedModifier) Description(_ context.Context) string {
+	if !m.str.IsNull() {
+		return fmt.Sprintf("Set to %q when mode is gateway.", m.str.ValueString())
+	}
+	return fmt.Sprintf("Set to %t when mode is gateway.", m.b.ValueBool())
 }
 
-func (m gatewayForcedBoolModifier) MarkdownDescription(ctx context.Context) string {
+func (m gatewayForcedModifier) MarkdownDescription(ctx context.Context) string {
 	return m.Description(ctx)
 }
 
-func (m gatewayForcedBoolModifier) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
-	if req.Plan.Raw.IsNull() || !req.ConfigValue.IsNull() || !planIsGatewayMode(ctx, req.Plan, &resp.Diagnostics) {
-		return
+// applies reports whether the forced value must be planned: the
+// resource is not being destroyed, the attribute is unset in config
+// and the planned mode is a known "gateway".
+func (m gatewayForcedModifier) applies(ctx context.Context, plan tfsdk.Plan, configNull bool, diags *diag.Diagnostics) bool {
+	return !plan.Raw.IsNull() && configNull && planIsGatewayMode(ctx, plan, diags)
+}
+
+func (m gatewayForcedModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if m.applies(ctx, req.Plan, req.ConfigValue.IsNull(), &resp.Diagnostics) {
+		resp.PlanValue = m.str
 	}
-	resp.PlanValue = types.BoolValue(m.value)
+}
+
+func (m gatewayForcedModifier) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if m.applies(ctx, req.Plan, req.ConfigValue.IsNull(), &resp.Diagnostics) {
+		resp.PlanValue = m.b
+	}
 }
 
 // planIsGatewayMode reports whether the planned `mode` is a known

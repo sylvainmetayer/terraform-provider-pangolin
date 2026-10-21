@@ -493,6 +493,18 @@ func TestSiteResourceValidateConfig(t *testing.T) {
 			"destination_port": tftypes.NewValue(tftypes.Number, tftypes.UnknownValue),
 		}, ""},
 		{"host keeps its alias", map[string]tftypes.Value{"mode": str("host"), "destination": str("10.0.0.5"), "alias": str("db.internal")}, ""},
+		{"http with the forced values spelled out", map[string]tftypes.Value{
+			"mode": str("http"), "destination": str("10.0.0.5"),
+			"tcp_port_range": str("443,80"), "udp_port_range": str(""),
+			"disable_icmp": tftypes.NewValue(tftypes.Bool, true),
+		}, ""},
+		{"http with another tcp port range", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "tcp_port_range": str("8080")}, "tcp_port_range"},
+		{"http with a udp port range", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "udp_port_range": str("53")}, "udp_port_range"},
+		{"http with icmp enabled", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "disable_icmp": tftypes.NewValue(tftypes.Bool, false)}, "disable_icmp"},
+		{"host keeps its port ranges and icmp", map[string]tftypes.Value{
+			"mode": str("host"), "destination": str("10.0.0.5"),
+			"tcp_port_range": str("5432"), "disable_icmp": tftypes.NewValue(tftypes.Bool, false),
+		}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -591,6 +603,11 @@ func TestCreateSiteResourceErrorDetail(t *testing.T) {
 	old := errors.New(`API error (status 400): Validation error: Invalid option: expected one of "host"|"cidr"|"http"|"ssh"|"inference" at "mode"`)
 	if got := createSiteResourceErrorDetail("gateway", old); !strings.Contains(got, "Pangolin 1.24") || !strings.HasPrefix(got, old.Error()) {
 		t.Errorf("gateway 400: %q", got)
+	}
+	// The hint does not depend on how the client formats the status.
+	reworded := errors.New(`pangolin: bad request: Validation error: Invalid option at "mode"`)
+	if got := createSiteResourceErrorDetail("gateway", reworded); !strings.Contains(got, "Pangolin 1.24") {
+		t.Errorf("gateway 400, other formatting: %q", got)
 	}
 	// No hint for another mode, or for a non-validation failure.
 	if got := createSiteResourceErrorDetail("host", old); got != old.Error() {

@@ -82,13 +82,13 @@ resource "pangolin_site_resource" "exit_node" {
 - `auth_daemon_mode` (String) Auth daemon mode: 'site' or 'remote'. Defaults to 'site'.
 - `destination` (String) The destination: hostname (`host` mode), CIDR (`cidr` mode), or backend IP / hostname (`http` mode). Required in those modes. Leave unset for `gateway` mode, where the server sets `0.0.0.0/0`.
 - `destination_port` (Number) Backend destination port. Required for `mode = http`; ignored for `cidr` / `host`.
-- `disable_icmp` (Boolean) Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes and `true` for `mode = http`, and forces `false` for `mode = gateway`; leaving this unset lets the server pick.
+- `disable_icmp` (Boolean) Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes, forces `true` for `mode = http` and `false` for `mode = gateway` (any other value is rejected in those two modes); leaving this unset lets the server pick.
 - `domain_id` (String) ID of the parent domain (use the `pangolin_domains` data source to discover). Required for `mode = http`; ignored for `cidr` / `host`.
 - `pam_mode` (String) PAM (Pluggable Authentication Module) mode for SSH-backed site resources. One of `passthrough` or `push`. 1.19+ only - pre-1.19 servers leave this null.
 - `scheme` (String) Protocol scheme of the upstream backend. Required for `mode = http`; ignored for `cidr` / `host`. One of `http`, `https`.
 - `subdomain` (String) Subdomain to host the proxy at - combined with `domain_id` to produce `full_domain`. Required for `mode = http`; ignored for `cidr` / `host`.
-- `tcp_port_range` (String) TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server auto-assigns `"443,80"` and ignores any value set here; for `mode = gateway` it forces `"*"`.
-- `udp_port_range` (String) UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `"*"`.
+- `tcp_port_range` (String) TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server forces `"443,80"` and for `mode = gateway` it forces `"*"`; any other value is rejected in those modes.
+- `udp_port_range` (String) UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = http` the server forces `""` and for `mode = gateway` it forces `"*"`; any other value is rejected in those modes.
 
 ### Read-Only
 
