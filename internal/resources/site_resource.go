@@ -170,7 +170,7 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"udp_port_range": schema.StringAttribute{
-				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = http` the server forces `\"\"` and for `mode = gateway` it forces `\"*\"`; any other value is rejected in those modes.",
+				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `\"*\"` and any other value is rejected. For `mode = http` the value has no effect: Pangolin 1.24 stores `\"\"` and older servers store it unused, so a non-empty value only raises a warning and is kept as configured in state.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -523,11 +523,18 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 		}
 		if mode == "http" {
 			// The create handler forces these for an http resource
-			// (tcp "443,80" since 1.20, udp "" and ICMP disabled), so
-			// any other configured value ends in an inconsistent result.
+			// (tcp "443,80" since 1.20 and ICMP disabled), so any other
+			// configured value ends in an inconsistent result.
 			checkString("tcp_port_range", cfg.TCPPortRange, httpTCPPortRange)
-			checkString("udp_port_range", cfg.UDPPortRange, "")
 			checkBool("disable_icmp", cfg.DisableICMP, true)
+			// UDP has no use in http mode: 1.24 stores "", older
+			// servers store the value unused. Warn only; the configured
+			// value is kept in state (see hydrateSiteResourceState).
+			if v := cfg.UDPPortRange; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
+				resp.Diagnostics.AddAttributeWarning(path.Root("udp_port_range"), "Value ignored in http mode",
+					"`udp_port_range` has no effect when `mode = \"http\"`; Pangolin 1.24 stores \"\" instead. "+
+						"The configured value is kept in the Terraform state. Remove it to silence this warning.")
+			}
 		}
 		return
 	default:
@@ -555,6 +562,18 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 	unused("subdomain", knownString(cfg.Subdomain))
 	unused("scheme", knownString(cfg.Scheme))
 	unused("destination_port", !cfg.DestinationPort.IsNull() && !cfg.DestinationPort.IsUnknown())
+}
+
+// httpUDPPortRange keeps a known non-empty prior/planned UDP range when an
+// http-mode resource reads back "": Pangolin 1.24 forces "" there while
+// the value has no effect in that mode, so keeping the configured value
+// avoids an inconsistent result without hiding real drift elsewhere.
+func httpUDPPortRange(prior types.String, siteRes *client.SiteResource) types.String {
+	if siteRes.Mode == "http" && siteRes.UDPPortRange == "" &&
+		!prior.IsNull() && !prior.IsUnknown() && prior.ValueString() != "" {
+		return prior
+	}
+	return types.StringValue(siteRes.UDPPortRange)
 }
 
 // gatewayForcedModifier plans the value the server forces in gateway
@@ -637,7 +656,7 @@ func hydrateSiteResourceState(state *SitePrivateResourceModel, siteRes *client.S
 	state.Destination = types.StringValue(siteRes.Destination)
 	state.Alias = types.StringValue(siteRes.Alias)
 	state.TCPPortRange = types.StringValue(siteRes.TCPPortRange)
-	state.UDPPortRange = types.StringValue(siteRes.UDPPortRange)
+	state.UDPPortRange = httpUDPPortRange(state.UDPPortRange, siteRes)
 	state.DisableICMP = types.BoolValue(siteRes.DisableICMP)
 	state.AuthDaemonMode = types.StringValue(siteRes.AuthDaemonMode)
 	state.AuthDaemonPort = types.Int64Value(int64(siteRes.AuthDaemonPort))

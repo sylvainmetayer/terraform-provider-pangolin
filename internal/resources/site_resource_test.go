@@ -499,7 +499,7 @@ func TestSiteResourceValidateConfig(t *testing.T) {
 			"disable_icmp": tftypes.NewValue(tftypes.Bool, true),
 		}, ""},
 		{"http with another tcp port range", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "tcp_port_range": str("8080")}, "tcp_port_range"},
-		{"http with a udp port range", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "udp_port_range": str("53")}, "udp_port_range"},
+		{"http with a udp port range only warns", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "udp_port_range": str("53")}, ""},
 		{"http with icmp enabled", map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "disable_icmp": tftypes.NewValue(tftypes.Bool, false)}, "disable_icmp"},
 		{"host keeps its port ranges and icmp", map[string]tftypes.Value{
 			"mode": str("host"), "destination": str("10.0.0.5"),
@@ -621,5 +621,75 @@ func TestCreateSiteResourceErrorDetail(t *testing.T) {
 	conflict := errors.New("API error (status 409): Alias already in use by another site resource")
 	if got := createSiteResourceErrorDetail("gateway", conflict); got != conflict.Error() {
 		t.Errorf("gateway 409: %q", got)
+	}
+}
+
+func TestSiteResourceValidateConfig_HTTPUDPPortRangeWarns(t *testing.T) {
+	s := siteResourceSchema(t)
+	str := func(v string) tftypes.Value { return tftypes.NewValue(tftypes.String, v) }
+	for _, tc := range []struct {
+		name string
+		udp  tftypes.Value
+		warn bool
+	}{
+		{"non-empty", str("53"), true},
+		{"empty", str(""), false},
+		{"unknown", tftypes.NewValue(tftypes.String, tftypes.UnknownValue), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := siteResourceRaw(t, s, map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "udp_port_range": tc.udp})
+			var resp resource.ValidateConfigResponse
+			(&SitePrivateResource{}).ValidateConfig(context.Background(), resource.ValidateConfigRequest{Config: tfsdk.Config{Schema: s, Raw: raw}}, &resp)
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("unexpected error: %v", resp.Diagnostics)
+			}
+			found := false
+			for _, d := range resp.Diagnostics.Warnings() {
+				if dp, ok := d.(diag.DiagnosticWithPath); ok && dp.Path().Equal(path.Root("udp_port_range")) {
+					found = true
+				}
+			}
+			if found != tc.warn {
+				t.Errorf("warning on udp_port_range = %v, want %v (%v)", found, tc.warn, resp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestHydrateSiteResourceState_HTTPModeKeepsConfiguredUDP(t *testing.T) {
+	// Pangolin 1.24 answers "" for an http resource whatever was sent:
+	// the configured "53" must stay in state on apply and on refresh.
+	for _, step := range []string{"apply", "refresh"} {
+		t.Run(step, func(t *testing.T) {
+			m := SitePrivateResourceModel{UDPPortRange: types.StringValue("53")}
+			hydrateSiteResourceState(&m, &client.SiteResource{Mode: "http", UDPPortRange: ""})
+			if got := m.UDPPortRange.ValueString(); got != "53" {
+				t.Errorf("UDPPortRange = %q, want 53", got)
+			}
+		})
+	}
+
+	// An older server storing the value echoes it back unchanged.
+	m := SitePrivateResourceModel{UDPPortRange: types.StringValue("53")}
+	hydrateSiteResourceState(&m, &client.SiteResource{Mode: "http", UDPPortRange: "53"})
+	if got := m.UDPPortRange.ValueString(); got != "53" {
+		t.Errorf("echoed UDPPortRange = %q, want 53", got)
+	}
+
+	// Create without a configured value (unknown plan) and import (null)
+	// take the server value.
+	for _, prior := range []types.String{types.StringUnknown(), types.StringNull()} {
+		pm := SitePrivateResourceModel{UDPPortRange: prior}
+		hydrateSiteResourceState(&pm, &client.SiteResource{Mode: "http", UDPPortRange: ""})
+		if pm.UDPPortRange.IsNull() || pm.UDPPortRange.ValueString() != "" {
+			t.Errorf("prior %v: UDPPortRange = %v, want \"\"", prior, pm.UDPPortRange)
+		}
+	}
+
+	// Other modes keep reporting the server value (real drift).
+	m = SitePrivateResourceModel{UDPPortRange: types.StringValue("53")}
+	hydrateSiteResourceState(&m, &client.SiteResource{Mode: "host", UDPPortRange: ""})
+	if got := m.UDPPortRange.ValueString(); got != "" {
+		t.Errorf("host mode UDPPortRange = %q, want server value", got)
 	}
 }

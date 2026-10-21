@@ -88,7 +88,7 @@ resource "pangolin_site_resource" "exit_node" {
 - `scheme` (String) Protocol scheme of the upstream backend. Required for `mode = http`; ignored for `cidr` / `host`. One of `http`, `https`.
 - `subdomain` (String) Subdomain to host the proxy at - combined with `domain_id` to produce `full_domain`. Required for `mode = http`; ignored for `cidr` / `host`.
 - `tcp_port_range` (String) TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server forces `"443,80"` and for `mode = gateway` it forces `"*"`; any other value is rejected in those modes.
-- `udp_port_range` (String) UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = http` the server forces `""` and for `mode = gateway` it forces `"*"`; any other value is rejected in those modes.
+- `udp_port_range` (String) UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `"*"` and any other value is rejected. For `mode = http` the value has no effect: Pangolin 1.24 stores `""` and older servers store it unused, so a non-empty value only raises a warning and is kept as configured in state.
 
 ### Read-Only
 
