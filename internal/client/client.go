@@ -185,10 +185,17 @@ func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
+			wait := backoffDelay(attempt - 1)
+			tflog.Debug(ctx, "pangolin: retrying unsent HTTP request", map[string]any{
+				"method":  method,
+				"path":    path,
+				"attempt": attempt,
+				"wait_ms": wait.Milliseconds(),
+			})
 			select {
 			case <-ctx.Done():
 				return lastResp, ctx.Err()
-			case <-time.After(backoffDelay(attempt - 1)):
+			case <-time.After(wait):
 			}
 		}
 
@@ -201,7 +208,8 @@ func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body
 }
 
 // shouldRetryUnsent reports whether err proves the request never reached
-// the server's handler: a 429 rate limit, or a dial failure.
+// the server's handler: a 429 rate limit, or a dial failure (including a
+// failed dial to an HTTP(S) proxy).
 func shouldRetryUnsent(err error) bool {
 	if err == nil {
 		return false
@@ -209,8 +217,28 @@ func shouldRetryUnsent(err error) bool {
 	if errors.Is(err, ErrRateLimited) {
 		return true
 	}
-	var opErr *net.OpError
-	return errors.As(err, &opErr) && opErr.Op == "dial"
+	return isDialError(err)
+}
+
+// isDialError walks the whole error tree, so a dial *net.OpError wrapped
+// in a "proxyconnect" one or in a multi-%w error is still found.
+func isDialError(err error) bool {
+	if opErr, ok := err.(*net.OpError); ok && opErr.Op == "dial" {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		if inner := u.Unwrap(); inner != nil {
+			return isDialError(inner)
+		}
+	case interface{ Unwrap() []error }:
+		for _, inner := range u.Unwrap() {
+			if isDialError(inner) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
