@@ -58,7 +58,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_resource_role` | Assign a role to an HTTP resource |
 | `pangolin_resource_user` | Assign a user to an HTTP resource |
 | `pangolin_resource_whitelist` | Add an email to an HTTP resource whitelist |
-| `pangolin_resource_rule` | Access-control rule for a resource (CIDR, IP, path, country, ASN) |
+| `pangolin_resource_rule` | Access-control rule for a resource (CIDR, IP, path, country, country exclusion, region, ASN, HTTP method) |
 | `pangolin_resource_password` | Password protection for a resource |
 | `pangolin_resource_pincode` | PIN-code protection for a resource |
 | `pangolin_resource_header_auth` | Header-based authentication for a resource |

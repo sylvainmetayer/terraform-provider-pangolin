@@ -4395,6 +4395,115 @@ func TestResource_DecodesPost119WireShape(t *testing.T) {
 	}
 }
 
+// --- Resource rules ---
+
+func TestGetResourceRule_InlinePolicyPayload(t *testing.T) {
+	// 1.24 payload for a resource on its inline policy: resourceId is
+	// null on every rule. Before that, the list left it out entirely.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/resource/13/rules" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("limit"); got != "1000" {
+			t.Errorf("limit = %q, want 1000", got)
+		}
+		if got := r.URL.Query().Get("offset"); got != "0" {
+			t.Errorf("offset = %q, want 0", got)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"rules": []map[string]any{
+				{"ruleId": 4, "resourceId": nil, "action": "ACCEPT", "match": "CIDR", "value": "10.0.0.0/8", "priority": 1, "enabled": true},
+				{"ruleId": 5, "resourceId": nil, "action": "DROP", "match": "COUNTRY_IS_NOT", "value": "FR", "priority": 2, "enabled": true},
+			},
+			"pagination": map[string]any{"total": 2, "limit": 1000, "offset": 0},
+		})
+	})
+
+	rule, err := c.GetResourceRule(context.Background(), 13, 5)
+	if err != nil {
+		t.Fatalf("GetResourceRule: %v", err)
+	}
+	if rule.RuleID != 5 || rule.Match != "COUNTRY_IS_NOT" || rule.Value != "FR" {
+		t.Errorf("rule = %+v", rule)
+	}
+}
+
+func TestGetResourceRule_MissingRuleIsNotFound(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"rules": []any{}})
+	})
+	_, err := c.GetResourceRule(context.Background(), 13, 5)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetResourceRule_WalksPages(t *testing.T) {
+	// 1001 rules: the wanted one is the only row of the second page.
+	var offsets []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		offset := r.URL.Query().Get("offset")
+		offsets = append(offsets, offset)
+		rules := []map[string]any{}
+		switch offset {
+		case "0":
+			for i := 1; i <= 1000; i++ {
+				rules = append(rules, map[string]any{"ruleId": i, "action": "ACCEPT", "match": "IP", "value": "1.1.1.1", "priority": i, "enabled": true})
+			}
+		case "1000":
+			rules = append(rules, map[string]any{"ruleId": 1001, "action": "DROP", "match": "PATH", "value": "/x", "priority": 1001, "enabled": true})
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"rules":      rules,
+			"pagination": map[string]any{"total": 1001, "limit": 1000, "offset": offset},
+		})
+	})
+	rule, err := c.GetResourceRule(context.Background(), 13, 1001)
+	if err != nil {
+		t.Fatalf("GetResourceRule: %v", err)
+	}
+	if rule.RuleID != 1001 || rule.Value != "/x" {
+		t.Errorf("rule = %+v", rule)
+	}
+	if len(offsets) != 2 || offsets[0] != "0" || offsets[1] != "1000" {
+		t.Errorf("offsets = %v, want [0 1000]", offsets)
+	}
+}
+
+func TestGetResourceRule_StopsAtTotal(t *testing.T) {
+	// A full page that reaches total ends the walk without an extra call.
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		rules := []map[string]any{}
+		for i := 1; i <= 1000; i++ {
+			rules = append(rules, map[string]any{"ruleId": i, "action": "ACCEPT", "match": "IP", "value": "1.1.1.1", "priority": i, "enabled": true})
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"rules":      rules,
+			"pagination": map[string]any{"total": 1000, "limit": 1000, "offset": 0},
+		})
+	})
+	_, err := c.GetResourceRule(context.Background(), 13, 5000)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestUpdateResourceRule_NullDataIsNotFound(t *testing.T) {
+	// The server sends data: null when its UPDATE matched no row.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, nil)
+	})
+	_, err := c.UpdateResourceRule(context.Background(), 13, 5, &SetResourceRuleRequest{Action: "DROP", Match: "IP", Value: "1.2.3.4", Priority: 1})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
 // extractParam grabs the value of a single URL query parameter from a raw
 // query string. Returns "" if absent. Does not unescape.
 func extractParam(rawQuery, key string) string {

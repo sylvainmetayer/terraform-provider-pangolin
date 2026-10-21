@@ -99,7 +99,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_site_resource_role` | Assigns a role to a site resource |
 | `pangolin_site_resource_user` | Assigns a user to a site resource |
 | `pangolin_site_resource_client` | Assigns an OLM client to a site resource |
-| `pangolin_resource_rule` | Access control rule for a resource (CIDR, IP, path, country, ASN) |
+| `pangolin_resource_rule` | Access control rule for a resource (CIDR, IP, path, country, country exclusion, region, ASN, HTTP method) |
 | `pangolin_resource_password` | Password protection for a resource |
 | `pangolin_resource_pincode` | PIN code protection for a resource |
 | `pangolin_resource_header_auth` | Header-based authentication for a resource |

@@ -3213,15 +3213,23 @@ func (c *Client) DeleteResourceAccessToken(ctx context.Context, accessTokenID st
 // --- Resource Rules ---
 
 // ResourceRule represents an access control rule for a resource.
+//
+// There is no ResourceID field on purpose: the rules list sends
+// resourceId as null for rules backed by the resource's inline policy
+// (1.24+) and older servers left it out, so callers take the resource ID
+// from the path they queried.
 type ResourceRule struct {
-	RuleID     int    `json:"ruleId"`
-	ResourceID int    `json:"resourceId"`
-	Action     string `json:"action"`
-	Match      string `json:"match"`
-	Value      string `json:"value"`
-	Priority   int    `json:"priority"`
-	Enabled    bool   `json:"enabled"`
+	RuleID   int    `json:"ruleId"`
+	Action   string `json:"action"`
+	Match    string `json:"match"`
+	Value    string `json:"value"`
+	Priority int    `json:"priority"`
+	Enabled  bool   `json:"enabled"`
 }
+
+// resourceRulesPageSize is the page size used to walk the rules list. It
+// matches the server default (listResourceRules.ts), which has no maximum.
+const resourceRulesPageSize = 1000
 
 // SetResourceRuleRequest is the payload for creating or updating a resource rule.
 type SetResourceRuleRequest struct {
@@ -3245,25 +3253,40 @@ func (c *Client) CreateResourceRule(ctx context.Context, resourceID int, req *Se
 	return &rule, nil
 }
 
-// GetResourceRule retrieves a resource rule by ID (via list + filter).
+// GetResourceRule retrieves a resource rule by ID (via list + filter). There
+// is no per-rule GET, so it walks the paginated rules list until the rule
+// is found or the list is exhausted.
 func (c *Client) GetResourceRule(ctx context.Context, resourceID, ruleID int) (*ResourceRule, error) {
-	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/resource/%d/rules", resourceID), nil)
-	if err != nil {
-		return nil, err
-	}
-	var result struct {
-		Rules []ResourceRule `json:"rules"`
-	}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse resource rules: %w", err)
-	}
-	for _, r := range result.Rules {
-		if r.RuleID == ruleID {
-			rule := r
-			return &rule, nil
+	for offset := 0; ; offset += resourceRulesPageSize {
+		values := url.Values{}
+		values.Set("limit", strconv.Itoa(resourceRulesPageSize))
+		values.Set("offset", strconv.Itoa(offset))
+		resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/resource/%d/rules?%s", resourceID, values.Encode()), nil)
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Rules      []ResourceRule `json:"rules"`
+			Pagination struct {
+				Total int `json:"total"`
+			} `json:"pagination"`
+		}
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse resource rules: %w", err)
+		}
+		for _, r := range result.Rules {
+			if r.RuleID == ruleID {
+				rule := r
+				return &rule, nil
+			}
+		}
+		// A short page ends the list. A missing total (0) is not trusted
+		// on its own, so a full page always asks for the next one.
+		if len(result.Rules) < resourceRulesPageSize ||
+			(result.Pagination.Total > 0 && offset+len(result.Rules) >= result.Pagination.Total) {
+			return nil, fmt.Errorf("resource rule %d: %w", ruleID, ErrNotFound)
 		}
 	}
-	return nil, fmt.Errorf("resource rule %d: %w", ruleID, ErrNotFound)
 }
 
 // UpdateResourceRule updates an existing resource rule.
@@ -3275,6 +3298,11 @@ func (c *Client) UpdateResourceRule(ctx context.Context, resourceID, ruleID int,
 	var rule ResourceRule
 	if err := json.Unmarshal(resp.Data, &rule); err != nil {
 		return nil, fmt.Errorf("failed to parse resource rule: %w", err)
+	}
+	// The server answers with data: null when its UPDATE matched no row,
+	// e.g. the rule or the resource's policy changed concurrently.
+	if rule.RuleID == 0 {
+		return nil, fmt.Errorf("resource rule %d: the update returned no rule: %w", ruleID, ErrNotFound)
 	}
 	return &rule, nil
 }
