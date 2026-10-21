@@ -87,7 +87,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 |---|---|
 | `pangolin_org` | Organization |
 | `pangolin_site` | Site (tunnel connector) |
-| `pangolin_resource` | HTTP resource (public reverse proxy endpoint) |
+| `pangolin_resource` | Public resource: HTTP reverse proxy, browser SSH / RDP / VNC, AI inference endpoint, or raw TCP / UDP |
 | `pangolin_target` | Backend target for an HTTP resource |
 | `pangolin_site_resource` | Site resource (exposes a resource via a site) |
 | `pangolin_role` | Role |

@@ -579,6 +579,9 @@ type CreateResourceRequest struct {
 	// server builds keep receiving the pre-1.19 payload unchanged.
 	Mode      string `json:"mode,omitempty"`
 	ProxyPort *int   `json:"proxyPort,omitempty"`
+
+	// 1.22+ inference mode only: AI providers attached at creation.
+	AIProviders []ResourceAIProviderAttachment `json:"aiProviders,omitempty"`
 }
 
 // CreateResource creates a new HTTP resource.
