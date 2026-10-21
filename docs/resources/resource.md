@@ -125,6 +125,9 @@ resource "pangolin_resource" "under_maintenance" {
 - `post_auth_path` (String) Landing path after a successful login (e.g. `/dashboard`).
 - `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / `tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.
 - `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `ssh` / `rdp` / `vnc` / `tcp` / `udp` modes; ignored for `http`. Changing this attribute forces replacement.
+- `resource_policy_id` (Number) ID of the shared resource policy (`pangolin_resource_policy`, Enterprise) this resource is attached to. Leave unset to keep the current attachment, set a policy ID to attach the resource, or set `0` to detach it and fall back to its own inline policy.
+
+> **Note:** Pangolin wipes the resource-level password, PIN code, header auth, email whitelist, rules and user / role grants (except the admin role) whenever the attachment changes, so the policy fully governs access. Resource-level `pangolin_resource_password`, `pangolin_resource_rule`, `pangolin_resource_role` and similar resources then drift and are recreated on the next apply. While attached, `sso`, `email_whitelist_enabled`, `apply_rules` and `skip_to_idp_id` set on this resource override the shared policy for this resource only.
 - `set_host_header` (String) Override the upstream `Host` header. Only meaningful for `mode = "http"`. Set to null to keep the incoming host.
 - `skip_to_idp_id` (Number) Bypass the Pangolin login page and jump straight to the given IdP.
 - `ssl` (Boolean) Enable SSL towards the backend.
@@ -144,7 +147,6 @@ resource "pangolin_resource" "under_maintenance" {
 - `proxy_protocol` (Boolean) Whether PROXY-protocol encapsulation is on for the upstream L4 socket. Read-only in the current provider - the server-side POST endpoint refuses this key.
 - `proxy_protocol_version` (Number) PROXY-protocol version (1 or 2). Read-only in the current provider - the server-side POST endpoint refuses this key.
 - `resource_guid` (String) Server-assigned globally unique identifier (1.19+).
-- `resource_policy_id` (Number) ID of the shared resource-policy this resource is attached to (1.19+). Read-only: the resource-policy CRUD endpoints require an API key scoped to resource policies and are not exposed via this provider.
 - `wildcard` (Boolean) Whether the resource matches a wildcard subdomain (1.19+).
 
 <a id="nestedatt--headers"></a>

@@ -1,0 +1,1 @@
+terraform import pangolin_resource_policy_pincode.example <resource_policy_id>

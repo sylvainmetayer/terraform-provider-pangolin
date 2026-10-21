@@ -512,11 +512,10 @@ type Resource struct {
 	MaintenanceMessage       *string `json:"maintenanceMessage,omitempty"`
 	MaintenanceEstimatedTime *string `json:"maintenanceEstimatedTime,omitempty"`
 
-	// 1.19 additions - resource-policy backing (read-only; the CRUD
-	// routes require a resource-policy-scoped API key and are not
-	// exposed here). `DefaultResourcePolicyID` is auto-assigned by
+	// 1.19 additions - resource-policy backing.
+	// `DefaultResourcePolicyID` is the inline policy auto-assigned by
 	// the server on create; `ResourcePolicyID` is the shared policy
-	// when the user attaches one.
+	// the resource is attached to, if any.
 	ResourcePolicyID        *int `json:"resourcePolicyId,omitempty"`
 	DefaultResourcePolicyID *int `json:"defaultResourcePolicyId,omitempty"`
 }
@@ -1446,6 +1445,21 @@ type UpdateResourceRequest struct {
 	PamMode        string `json:"pamMode,omitempty"`
 	AuthDaemonMode string `json:"authDaemonMode,omitempty"`
 	AuthDaemonPort *int   `json:"authDaemonPort,omitempty"`
+
+	// Shared resource policy (Enterprise). Raw JSON so the payload can
+	// carry an explicit `null`, which detaches the resource; nil omits
+	// the key and leaves the attachment as is. Accepted for every mode.
+	ResourcePolicyID *json.RawMessage `json:"resourcePolicyId,omitempty"`
+}
+
+// ResourcePolicyIDValue returns the resourcePolicyId payload value: the
+// policy ID, or JSON null to detach the resource when id is nil.
+func ResourcePolicyIDValue(id *int) *json.RawMessage {
+	raw := json.RawMessage("null")
+	if id != nil {
+		raw = json.RawMessage(strconv.Itoa(*id))
+	}
+	return &raw
 }
 
 // UpdateResource updates an HTTP resource by ID.

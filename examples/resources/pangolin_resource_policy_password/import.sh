@@ -1,0 +1,1 @@
+terraform import pangolin_resource_policy_password.example <resource_policy_id>

@@ -1,0 +1,643 @@
+package resources
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
+)
+
+var (
+	_ resource.Resource                   = &ResourcePolicyResource{}
+	_ resource.ResourceWithImportState    = &ResourcePolicyResource{}
+	_ resource.ResourceWithValidateConfig = &ResourcePolicyResource{}
+)
+
+// resourcePolicyRuleMatchTypes mirrors RESOURCE_RULE_MATCH_TYPES in
+// server/lib/validators.ts.
+var resourcePolicyRuleMatchTypes = []string{
+	"CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "ASN", "REGION", "METHOD",
+}
+
+// lowercaseRegexp rejects uppercase letters.
+var lowercaseRegexp = regexp.MustCompile(`^[^A-Z]*$`)
+
+// resourcePolicyRuleAttrTypes is the object type of one `rules` entry.
+var resourcePolicyRuleAttrTypes = map[string]attr.Type{
+	"action":   types.StringType,
+	"match":    types.StringType,
+	"value":    types.StringType,
+	"priority": types.Int64Type,
+	"enabled":  types.BoolType,
+}
+
+// ResourcePolicyResource manages a shared Pangolin resource policy.
+type ResourcePolicyResource struct {
+	client *client.Client
+}
+
+// ResourcePolicyModel describes the resource data model.
+type ResourcePolicyModel struct {
+	ID                    types.Int64  `tfsdk:"id"`
+	NiceID                types.String `tfsdk:"nice_id"`
+	Name                  types.String `tfsdk:"name"`
+	SSO                   types.Bool   `tfsdk:"sso"`
+	SkipToIdpID           types.Int64  `tfsdk:"skip_to_idp_id"`
+	RoleIDs               types.Set    `tfsdk:"role_ids"`
+	UserIDs               types.Set    `tfsdk:"user_ids"`
+	EmailWhitelistEnabled types.Bool   `tfsdk:"email_whitelist_enabled"`
+	WhitelistEmails       types.Set    `tfsdk:"whitelist_emails"`
+	ApplyRules            types.Bool   `tfsdk:"apply_rules"`
+	Rules                 types.List   `tfsdk:"rules"`
+}
+
+// ResourcePolicyRuleModel is one entry of the `rules` list.
+type ResourcePolicyRuleModel struct {
+	Action   types.String `tfsdk:"action"`
+	Match    types.String `tfsdk:"match"`
+	Value    types.String `tfsdk:"value"`
+	Priority types.Int64  `tfsdk:"priority"`
+	Enabled  types.Bool   `tfsdk:"enabled"`
+}
+
+// NewResourcePolicyResource returns a new resource factory.
+func NewResourcePolicyResource() resource.Resource {
+	return &ResourcePolicyResource{}
+}
+
+func (r *ResourcePolicyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_resource_policy"
+}
+
+func (r *ResourcePolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a shared Pangolin resource policy: SSO, role and user grants, email whitelist and access rules " +
+			"that several HTTP resources can share. Attach a resource to it with `resource_policy_id` on `pangolin_resource`.\n\n" +
+			"Secrets are managed by separate resources so they never travel with the policy: " +
+			"`pangolin_resource_policy_password`, `pangolin_resource_policy_pincode` and `pangolin_resource_policy_header_auth`.\n\n" +
+			"> **Note:** Resource policies require Pangolin Enterprise (a valid license with the resource policies feature). " +
+			"The org admin role is always granted by the server and is not listed in `role_ids`. " +
+			"A policy cannot be destroyed while a resource is still attached to it.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.Int64Attribute{
+				Description: "The numeric resource policy ID.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"nice_id": schema.StringAttribute{
+				Description: "Readable ID, unique per org. Generated by the server when unset.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"name": schema.StringAttribute{
+				Description: "Display name of the policy.",
+				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+				},
+			},
+			"sso": schema.BoolAttribute{
+				Description: "Require Pangolin SSO authentication. Defaults to `true`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
+			},
+			"skip_to_idp_id": schema.Int64Attribute{
+				Description: "Bypass the Pangolin login page and jump straight to the given IdP of the org.",
+				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
+			},
+			"role_ids": schema.SetAttribute{
+				Description: "IDs of the roles granted access. The org admin role is always granted and must not be listed.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.Int64Type,
+				Default:     setdefault.StaticValue(types.SetValueMust(types.Int64Type, []attr.Value{})),
+			},
+			"user_ids": schema.SetAttribute{
+				Description: "IDs of the users granted access.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Default:     setdefault.StaticValue(types.SetValueMust(types.StringType, []attr.Value{})),
+			},
+			"email_whitelist_enabled": schema.BoolAttribute{
+				Description: "Enable the email (one-time password) whitelist. Defaults to `false`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+			},
+			"whitelist_emails": schema.SetAttribute{
+				Description: "Emails allowed through the whitelist, in lowercase. `*@example.com` allows a whole domain. " +
+					"Requires `email_whitelist_enabled = true`: the server drops the list while the whitelist is disabled.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Default:     setdefault.StaticValue(types.SetValueMust(types.StringType, []attr.Value{})),
+				Validators: []validator.Set{
+					setvalidator.ValueStringsAre(
+						stringvalidator.RegexMatches(lowercaseRegexp, "must be lowercase (the server lowercases emails)"),
+					),
+				},
+			},
+			"apply_rules": schema.BoolAttribute{
+				Description: "Evaluate `rules` for requests to the attached resources. Defaults to `false`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+			},
+			"rules": schema.ListNestedAttribute{
+				Description: "Access rules, evaluated by priority. The whole list is replaced on every change.",
+				Optional:    true,
+				Computed:    true,
+				Default:     listdefault.StaticValue(types.ListValueMust(types.ObjectType{AttrTypes: resourcePolicyRuleAttrTypes}, []attr.Value{})),
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"action": schema.StringAttribute{
+							Description: "The rule action: `ACCEPT`, `DROP`, or `PASS`.",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf("ACCEPT", "DROP", "PASS"),
+							},
+						},
+						"match": schema.StringAttribute{
+							Description: "The match type: `CIDR`, `IP`, `PATH`, `COUNTRY`, `COUNTRY_IS_NOT`, `ASN`, `REGION`, or `METHOD`.",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(resourcePolicyRuleMatchTypes...),
+							},
+						},
+						"value": schema.StringAttribute{
+							Description: "The value to match against (CIDR range, IP address, path, country or region code, ASN, HTTP method).",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.LengthAtLeast(1),
+							},
+						},
+						"priority": schema.Int64Attribute{
+							Description: "The rule priority (lower number = higher priority).",
+							Required:    true,
+						},
+						"enabled": schema.BoolAttribute{
+							Description: "Whether the rule is enabled. Defaults to `true`.",
+							Optional:    true,
+							Computed:    true,
+							Default:     booldefault.StaticBool(true),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *ResourcePolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	c, ok := req.ProviderData.(*client.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", "Expected *client.Client")
+		return
+	}
+	r.client = c
+}
+
+func (r *ResourcePolicyResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg ResourcePolicyModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// The server stores whitelist emails only while the whitelist is
+	// enabled, so a disabled whitelist with emails would never converge.
+	if cfg.WhitelistEmails.IsNull() || cfg.WhitelistEmails.IsUnknown() || len(cfg.WhitelistEmails.Elements()) == 0 {
+		return
+	}
+	if cfg.EmailWhitelistEnabled.IsUnknown() {
+		return
+	}
+	if !cfg.EmailWhitelistEnabled.ValueBool() {
+		resp.Diagnostics.AddAttributeError(path.Root("whitelist_emails"), "Email whitelist disabled",
+			"`whitelist_emails` requires `email_whitelist_enabled = true`: Pangolin discards the emails of a disabled whitelist.")
+	}
+}
+
+func (r *ResourcePolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan ResourcePolicyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	createReq, diags := buildResourcePolicyCreateRequest(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	created, err := r.client.CreateResourcePolicy(ctx, createReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to create resource policy", err.Error())
+		return
+	}
+	policyID := created.ResourcePolicyID
+
+	// Keep the ID in state from here on so a failed follow-up call
+	// leaves a tainted resource rather than an orphaned policy.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), int64(policyID))...)
+
+	if !plan.NiceID.IsNull() && !plan.NiceID.IsUnknown() && plan.NiceID.ValueString() != created.NiceID {
+		if err = r.client.UpdateResourcePolicy(ctx, policyID, &client.UpdateResourcePolicyRequest{
+			Name:   plan.Name.ValueString(),
+			NiceID: plan.NiceID.ValueString(),
+		}); err != nil {
+			resp.Diagnostics.AddError("Failed to set resource policy nice_id", err.Error())
+			return
+		}
+	}
+
+	policy, err := r.client.GetResourcePolicy(ctx, policyID)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read resource policy after creation", err.Error())
+		return
+	}
+
+	plan.ID = types.Int64Value(int64(policyID))
+	state, diags := applyResourcePolicyResponse(ctx, plan, policy)
+	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *ResourcePolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state ResourcePolicyModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	policy, err := r.client.GetResourcePolicy(ctx, int(state.ID.ValueInt64()))
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Failed to read resource policy", err.Error())
+		return
+	}
+
+	state, diags := applyResourcePolicyResponse(ctx, state, policy)
+	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *ResourcePolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, prior ResourcePolicyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	policyID := int(prior.ID.ValueInt64())
+
+	// Each group of settings has its own endpoint; none of them touches
+	// the password, PIN code or header auth secrets.
+	if !plan.Name.Equal(prior.Name) || (!plan.NiceID.IsUnknown() && !plan.NiceID.Equal(prior.NiceID)) {
+		updateReq := &client.UpdateResourcePolicyRequest{Name: plan.Name.ValueString()}
+		if !plan.NiceID.IsUnknown() && !plan.NiceID.IsNull() {
+			updateReq.NiceID = plan.NiceID.ValueString()
+		}
+		if err := r.client.UpdateResourcePolicy(ctx, policyID, updateReq); err != nil {
+			resp.Diagnostics.AddError("Failed to update resource policy", err.Error())
+			return
+		}
+	}
+
+	if !plan.SSO.Equal(prior.SSO) || !plan.SkipToIdpID.Equal(prior.SkipToIdpID) ||
+		!plan.RoleIDs.Equal(prior.RoleIDs) || !plan.UserIDs.Equal(prior.UserIDs) {
+		acReq, diags := buildResourcePolicyAccessControlRequest(ctx, plan)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := r.client.SetResourcePolicyAccessControl(ctx, policyID, acReq); err != nil {
+			resp.Diagnostics.AddError("Failed to update resource policy access control", err.Error())
+			return
+		}
+	}
+
+	if !plan.EmailWhitelistEnabled.Equal(prior.EmailWhitelistEnabled) || !plan.WhitelistEmails.Equal(prior.WhitelistEmails) {
+		emails, diags := setToStrings(ctx, plan.WhitelistEmails)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := r.client.SetResourcePolicyWhitelist(ctx, policyID, plan.EmailWhitelistEnabled.ValueBool(), emails); err != nil {
+			resp.Diagnostics.AddError("Failed to update resource policy whitelist", err.Error())
+			return
+		}
+	}
+
+	if !plan.ApplyRules.Equal(prior.ApplyRules) || !plan.Rules.Equal(prior.Rules) {
+		rules, diags := resourcePolicyRulesFromList(ctx, plan.Rules)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := r.client.SetResourcePolicyRules(ctx, policyID, plan.ApplyRules.ValueBool(), rules); err != nil {
+			resp.Diagnostics.AddError("Failed to update resource policy rules", err.Error())
+			return
+		}
+	}
+
+	policy, err := r.client.GetResourcePolicy(ctx, policyID)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read resource policy after update", err.Error())
+		return
+	}
+
+	plan.ID = prior.ID
+	state, diags := applyResourcePolicyResponse(ctx, plan, policy)
+	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *ResourcePolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state ResourcePolicyModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if err := r.client.DeleteResourcePolicy(ctx, int(state.ID.ValueInt64())); err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			return
+		}
+		resp.Diagnostics.AddError("Failed to delete resource policy",
+			err.Error()+"\n\nPangolin refuses to delete a policy that is still attached to a resource: detach it first "+
+				"(set `resource_policy_id = 0` on the `pangolin_resource`).")
+	}
+}
+
+func (r *ResourcePolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	id, err := strconv.ParseInt(req.ID, 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID", fmt.Sprintf("Cannot parse resource policy ID %q as integer", req.ID))
+		return
+	}
+
+	policy, err := r.client.GetResourcePolicy(ctx, int(id))
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import resource policy", err.Error())
+		return
+	}
+
+	state, diags := applyResourcePolicyResponse(ctx, ResourcePolicyModel{
+		ID:    types.Int64Value(id),
+		Rules: types.ListNull(types.ObjectType{AttrTypes: resourcePolicyRuleAttrTypes}),
+	}, policy)
+	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// buildResourcePolicyCreateRequest maps the plan to the create payload.
+// Role IDs go out as strings, as the create schema expects.
+func buildResourcePolicyCreateRequest(ctx context.Context, plan ResourcePolicyModel) (*client.CreateResourcePolicyRequest, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	roleIDs, d := setToInts(ctx, plan.RoleIDs)
+	diags.Append(d...)
+	userIDs, d := setToStrings(ctx, plan.UserIDs)
+	diags.Append(d...)
+	emails, d := setToStrings(ctx, plan.WhitelistEmails)
+	diags.Append(d...)
+	rules, d := resourcePolicyRulesFromList(ctx, plan.Rules)
+	diags.Append(d...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	roleIDStrings := make([]string, len(roleIDs))
+	for i, id := range roleIDs {
+		roleIDStrings[i] = strconv.Itoa(id)
+	}
+	return &client.CreateResourcePolicyRequest{
+		Name:                  plan.Name.ValueString(),
+		SSO:                   plan.SSO.ValueBool(),
+		SkipToIdpID:           int64PtrToIntPtr(plan.SkipToIdpID),
+		RoleIDs:               roleIDStrings,
+		UserIDs:               userIDs,
+		EmailWhitelistEnabled: plan.EmailWhitelistEnabled.ValueBool(),
+		Emails:                emails,
+		ApplyRules:            plan.ApplyRules.ValueBool(),
+		Rules:                 rules,
+	}, diags
+}
+
+// buildResourcePolicyAccessControlRequest maps the plan to the
+// access-control payload. A null skip_to_idp_id is sent as null, which
+// clears the shortcut.
+func buildResourcePolicyAccessControlRequest(ctx context.Context, plan ResourcePolicyModel) (*client.SetResourcePolicyAccessControlRequest, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	roleIDs, d := setToInts(ctx, plan.RoleIDs)
+	diags.Append(d...)
+	userIDs, d := setToStrings(ctx, plan.UserIDs)
+	diags.Append(d...)
+	if diags.HasError() {
+		return nil, diags
+	}
+	return &client.SetResourcePolicyAccessControlRequest{
+		SSO:         plan.SSO.ValueBool(),
+		UserIDs:     userIDs,
+		RoleIDs:     roleIDs,
+		SkipToIdpID: int64PtrToIntPtr(plan.SkipToIdpID),
+	}, diags
+}
+
+// applyResourcePolicyResponse copies a GET payload into the model. The
+// prior model only drives the order of `rules`, which the server
+// returns unordered.
+func applyResourcePolicyResponse(ctx context.Context, m ResourcePolicyModel, p *client.ResourcePolicy) (ResourcePolicyModel, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	var prior []ResourcePolicyRuleModel
+	if !m.Rules.IsNull() && !m.Rules.IsUnknown() {
+		diags.Append(m.Rules.ElementsAs(ctx, &prior, false)...)
+	}
+
+	m.ID = types.Int64Value(int64(p.ResourcePolicyID))
+	m.NiceID = types.StringValue(p.NiceID)
+	m.Name = types.StringValue(p.Name)
+	m.SSO = types.BoolValue(p.SSO)
+	m.SkipToIdpID = tfconv.Int64FromIntPtr(p.IDPID)
+	m.EmailWhitelistEnabled = types.BoolValue(p.EmailWhitelistEnabled)
+	m.ApplyRules = types.BoolValue(p.ApplyRules)
+
+	roleIDs := make([]attr.Value, len(p.Roles))
+	for i, role := range p.Roles {
+		roleIDs[i] = types.Int64Value(int64(role.RoleID))
+	}
+	m.RoleIDs = types.SetValueMust(types.Int64Type, roleIDs)
+
+	userIDs := make([]attr.Value, len(p.Users))
+	for i, user := range p.Users {
+		userIDs[i] = types.StringValue(user.UserID)
+	}
+	m.UserIDs = types.SetValueMust(types.StringType, userIDs)
+
+	emails := make([]attr.Value, len(p.EmailWhitelist))
+	for i, entry := range p.EmailWhitelist {
+		emails[i] = types.StringValue(entry.Email)
+	}
+	m.WhitelistEmails = types.SetValueMust(types.StringType, emails)
+
+	rules := orderResourcePolicyRules(prior, resourcePolicyRuleModels(p.Rules))
+	list, d := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: resourcePolicyRuleAttrTypes}, rules)
+	diags.Append(d...)
+	m.Rules = list
+	return m, diags
+}
+
+// resourcePolicyRuleModels converts wire rules to models. A missing
+// `enabled` means the column default, true.
+func resourcePolicyRuleModels(rules []client.ResourcePolicyRule) []ResourcePolicyRuleModel {
+	out := make([]ResourcePolicyRuleModel, len(rules))
+	for i, rule := range rules {
+		enabled := true
+		if rule.Enabled != nil {
+			enabled = *rule.Enabled
+		}
+		out[i] = ResourcePolicyRuleModel{
+			Action:   types.StringValue(rule.Action),
+			Match:    types.StringValue(rule.Match),
+			Value:    types.StringValue(rule.Value),
+			Priority: types.Int64Value(int64(rule.Priority)),
+			Enabled:  types.BoolValue(enabled),
+		}
+	}
+	return out
+}
+
+// orderResourcePolicyRules returns the server rules in the order of
+// the prior model, so an unchanged list does not show a diff. Server
+// rules with no prior match follow, sorted by priority.
+func orderResourcePolicyRules(prior, server []ResourcePolicyRuleModel) []ResourcePolicyRuleModel {
+	used := make([]bool, len(server))
+	out := make([]ResourcePolicyRuleModel, 0, len(server))
+	for _, want := range prior {
+		for i, got := range server {
+			if !used[i] && resourcePolicyRuleEqual(want, got) {
+				used[i] = true
+				out = append(out, got)
+				break
+			}
+		}
+	}
+	var rest []ResourcePolicyRuleModel
+	for i, got := range server {
+		if !used[i] {
+			rest = append(rest, got)
+		}
+	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		return rest[i].Priority.ValueInt64() < rest[j].Priority.ValueInt64()
+	})
+	return append(out, rest...)
+}
+
+func resourcePolicyRuleEqual(a, b ResourcePolicyRuleModel) bool {
+	return a.Action.Equal(b.Action) && a.Match.Equal(b.Match) && a.Value.Equal(b.Value) &&
+		a.Priority.Equal(b.Priority) && a.Enabled.Equal(b.Enabled)
+}
+
+// resourcePolicyRulesFromList converts the `rules` list to wire rules,
+// without rule IDs so the server replaces the whole set.
+func resourcePolicyRulesFromList(ctx context.Context, list types.List) ([]client.ResourcePolicyRule, diag.Diagnostics) {
+	out := []client.ResourcePolicyRule{}
+	if list.IsNull() || list.IsUnknown() {
+		return out, nil
+	}
+	var models []ResourcePolicyRuleModel
+	diags := list.ElementsAs(ctx, &models, false)
+	for _, m := range models {
+		enabled := true
+		if !m.Enabled.IsNull() && !m.Enabled.IsUnknown() {
+			enabled = m.Enabled.ValueBool()
+		}
+		out = append(out, client.ResourcePolicyRule{
+			Action:   m.Action.ValueString(),
+			Match:    m.Match.ValueString(),
+			Value:    m.Value.ValueString(),
+			Priority: int(m.Priority.ValueInt64()),
+			Enabled:  &enabled,
+		})
+	}
+	return out, diags
+}
+
+// setToStrings returns the elements of a string set, or an empty
+// slice when the set is null or unknown.
+func setToStrings(ctx context.Context, set types.Set) ([]string, diag.Diagnostics) {
+	out := []string{}
+	if set.IsNull() || set.IsUnknown() {
+		return out, nil
+	}
+	diags := set.ElementsAs(ctx, &out, false)
+	sort.Strings(out)
+	return out, diags
+}
+
+// setToInts returns the elements of an int64 set as ints, or an empty
+// slice when the set is null or unknown.
+func setToInts(ctx context.Context, set types.Set) ([]int, diag.Diagnostics) {
+	out := []int{}
+	if set.IsNull() || set.IsUnknown() {
+		return out, nil
+	}
+	var values []int64
+	diags := set.ElementsAs(ctx, &values, false)
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	for _, v := range values {
+		out = append(out, int(v))
+	}
+	return out, diags
+}
+
+// int64PtrToIntPtr returns nil for a null or unknown value.
+func int64PtrToIntPtr(v types.Int64) *int {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	i := int(v.ValueInt64())
+	return &i
+}
