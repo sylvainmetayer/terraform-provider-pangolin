@@ -619,9 +619,10 @@ func createSiteResourceErrorDetail(mode string, err error) string {
 }
 
 // buildCreateSiteResourceRequest maps the plan to the create payload.
-// In gateway mode the server-forced attributes are left off the body
-// (an empty `destination` would fail its validation). disable_icmp is
-// always planned false there, which the omitempty tag already drops.
+// Known port ranges and disable_icmp are always sent, so "" and false
+// reach the server instead of its defaults. In gateway mode the
+// server-forced attributes are left off the body (an empty
+// `destination` would fail its validation).
 func buildCreateSiteResourceRequest(ctx context.Context, plan SitePrivateResourceModel) (*client.CreateSiteResourceRequest, diag.Diagnostics) {
 	siteID, siteIDs, diags := siteResourceSites(ctx, plan)
 	if diags.HasError() {
@@ -637,9 +638,9 @@ func buildCreateSiteResourceRequest(ctx context.Context, plan SitePrivateResourc
 		AuthDaemonPort:  int(knownInt64(plan.AuthDaemonPort)),
 		Destination:     plan.Destination.ValueString(),
 		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
+		TCPPortRange:    tfconv.StringToPtr(plan.TCPPortRange),
+		UDPPortRange:    tfconv.StringToPtr(plan.UDPPortRange),
+		DisableICMP:     tfconv.BoolToPtr(plan.DisableICMP),
 		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
 		PamMode:         plan.PamMode.ValueString(),
 		DomainID:        plan.DomainID.ValueString(),
@@ -652,8 +653,9 @@ func buildCreateSiteResourceRequest(ctx context.Context, plan SitePrivateResourc
 	}
 	if plan.Mode.ValueString() == siteResourceModeGateway {
 		req.Destination = ""
-		req.TCPPortRange = ""
-		req.UDPPortRange = ""
+		req.TCPPortRange = nil
+		req.UDPPortRange = nil
+		req.DisableICMP = nil
 	}
 	if plan.Mode.ValueString() == siteResourceModeInference && !plan.AIProviderIDs.IsNull() && !plan.AIProviderIDs.IsUnknown() {
 		ids, d := siteResourceSetToInts(ctx, plan.AIProviderIDs)

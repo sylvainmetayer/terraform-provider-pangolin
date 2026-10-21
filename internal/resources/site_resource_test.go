@@ -386,6 +386,35 @@ func TestBuildCreateSiteResourceRequest_HostModeUnchanged(t *testing.T) {
 	}
 }
 
+func TestBuildCreateSiteResourceRequest_HostSendsEmptyPortRangesAndFalse(t *testing.T) {
+	// "" (no ports) and false must reach the server on create: a missing
+	// key gets the server default ("*" for the port ranges), which used to
+	// end in an inconsistent result after apply. Unknown values stay out.
+	plan := SitePrivateResourceModel{
+		Name:         types.StringValue("db"),
+		SiteID:       types.Int64Value(4),
+		Mode:         types.StringValue("host"),
+		Destination:  types.StringValue("10.0.0.5"),
+		Alias:        types.StringValue("db.internal"),
+		TCPPortRange: types.StringValue("5432"),
+		UDPPortRange: types.StringValue(""),
+		DisableICMP:  types.BoolValue(false),
+	}
+	body := bodyOf(t, mustCreateSiteResourceReq(t, plan))
+	if string(body["udpPortRangeString"]) != `""` {
+		t.Errorf("udpPortRangeString = %s, want \"\"", body["udpPortRangeString"])
+	}
+	if string(body["disableIcmp"]) != "false" {
+		t.Errorf("disableIcmp = %s, want false", body["disableIcmp"])
+	}
+
+	plan.TCPPortRange = types.StringUnknown()
+	body = bodyOf(t, mustCreateSiteResourceReq(t, plan))
+	if v, ok := body["tcpPortRangeString"]; ok {
+		t.Errorf("unknown tcp_port_range must be omitted, got %s", v)
+	}
+}
+
 func TestBuildUpdateSiteResourceRequest_GatewaySendsMode(t *testing.T) {
 	plan := SitePrivateResourceModel{
 		ID:           types.Int64Value(9),

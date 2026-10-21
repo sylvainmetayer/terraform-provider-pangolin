@@ -1009,18 +1009,21 @@ type SiteResource struct {
 // wire response - the server fills it itself (`null` in every
 // observation so far).
 type CreateSiteResourceRequest struct {
-	Name           string   `json:"name"`
-	NiceID         string   `json:"niceId,omitempty"`
-	SiteID         int      `json:"siteId,omitempty"`
-	SiteIDs        []int    `json:"siteIds,omitempty"`
-	Mode           string   `json:"mode"`
-	SSL            *bool    `json:"ssl,omitempty"`
-	AuthDaemonPort int      `json:"authDaemonPort,omitempty"`
-	Destination    string   `json:"destination,omitempty"`
-	Alias          string   `json:"alias,omitempty"`
-	TCPPortRange   string   `json:"tcpPortRangeString,omitempty"`
-	UDPPortRange   string   `json:"udpPortRangeString,omitempty"`
-	DisableICMP    bool     `json:"disableIcmp,omitempty"`
+	Name           string `json:"name"`
+	NiceID         string `json:"niceId,omitempty"`
+	SiteID         int    `json:"siteId,omitempty"`
+	SiteIDs        []int  `json:"siteIds,omitempty"`
+	Mode           string `json:"mode"`
+	SSL            *bool  `json:"ssl,omitempty"`
+	AuthDaemonPort int    `json:"authDaemonPort,omitempty"`
+	Destination    string `json:"destination,omitempty"`
+	Alias          string `json:"alias,omitempty"`
+	// Pointers so "" (no ports) and false reach the server: a missing
+	// key gets the server default ("*" for the port ranges). nil omits
+	// the key, which gateway mode relies on for its forced values.
+	TCPPortRange   *string  `json:"tcpPortRangeString,omitempty"`
+	UDPPortRange   *string  `json:"udpPortRangeString,omitempty"`
+	DisableICMP    *bool    `json:"disableIcmp,omitempty"`
 	AuthDaemonMode string   `json:"authDaemonMode,omitempty"`
 	PamMode        string   `json:"pamMode,omitempty"`
 	RoleIDs        []int    `json:"roleIds"`
