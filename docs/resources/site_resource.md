@@ -15,7 +15,7 @@ Manages a Pangolin private site resource (VPN-accessible endpoint).
 ```terraform
 # L4 tunnel (cidr / host modes) - requires alias + port ranges.
 resource "pangolin_site_resource" "internal_db" {
-  site_id        = pangolin_site.example.id
+  site_ids       = [pangolin_site.example.id]
   name           = "internal-db"
   mode           = "host"
   destination    = "db.internal"
@@ -23,9 +23,19 @@ resource "pangolin_site_resource" "internal_db" {
   tcp_port_range = "5432"
 }
 
+# Same service reachable through two sites (failover).
+resource "pangolin_site_resource" "replicated_db" {
+  site_ids       = [pangolin_site.example.id, pangolin_site.backup.id]
+  name           = "replicated-db"
+  mode           = "cidr"
+  destination    = "10.20.0.0/24"
+  alias          = "replica.local"
+  tcp_port_range = "5432"
+}
+
 # L7 HTTP proxy (http mode) - requires domain_id + subdomain + scheme + destination_port.
 resource "pangolin_site_resource" "app_proxy" {
-  site_id          = pangolin_site.example.id
+  site_ids         = [pangolin_site.example.id]
   name             = "app-proxy"
   mode             = "http"
   destination      = "10.0.0.42"
@@ -33,31 +43,56 @@ resource "pangolin_site_resource" "app_proxy" {
   subdomain        = "app"
   scheme           = "http"
   destination_port = 8080
+  ssl              = true
 }
 
 output "app_full_domain" {
   value = pangolin_site_resource.app_proxy.full_domain
 }
 
-# SSH-backed site resource (Pangolin 1.19+) - L4 tunnel with PAM push
-# notification MFA.
+# SSH server (ssh mode) with PAM push notification MFA. The server
+# forces tcp_port_range to destination_port ("22" when unset), so leave
+# the port ranges and disable_icmp unset. A hostname destination needs
+# an alias.
 resource "pangolin_site_resource" "ssh_bastion" {
-  site_id        = pangolin_site.example.id
-  name           = "ssh-bastion"
-  mode           = "host"
-  destination    = "bastion.internal"
-  alias          = "bastion.local"
-  tcp_port_range = "22"
-  pam_mode       = "push"
+  site_ids         = [pangolin_site.example.id]
+  name             = "ssh-bastion"
+  mode             = "ssh"
+  destination      = "bastion.internal"
+  alias            = "bastion.local"
+  destination_port = 2222
+  pam_mode         = "push"
 }
 
 # Exit node (gateway mode, Pangolin 1.24+) - routes all client traffic
 # through the site. The server forces destination = "0.0.0.0/0", both
 # port ranges to "*" and disable_icmp = false, so leave them unset.
 resource "pangolin_site_resource" "exit_node" {
-  site_id = pangolin_site.example.id
-  name    = "exit-node"
-  mode    = "gateway"
+  site_ids = [pangolin_site.example.id]
+  name     = "exit-node"
+  mode     = "gateway"
+}
+
+# AI inference endpoint (inference mode, Pangolin 1.22+) - served through
+# the exit node, so it has no site. The AI providers are created outside
+# Terraform for now; reference them by ID.
+resource "pangolin_site_resource" "llm" {
+  name            = "llm"
+  mode            = "inference"
+  domain_id       = data.pangolin_domains.all.domains[0].id
+  subdomain       = "llm"
+  ssl             = true
+  ai_provider_ids = [3]
+}
+
+# A resource can be kept but disabled.
+resource "pangolin_site_resource" "staging_db" {
+  site_ids    = [pangolin_site.example.id]
+  name        = "staging-db"
+  mode        = "host"
+  destination = "10.0.0.7"
+  alias       = "staging-db.local"
+  enabled     = false
 }
 ```
 
@@ -73,19 +108,29 @@ resource "pangolin_site_resource" "exit_node" {
 `http` mode is an L7 HTTP proxy: the resource requires `domain_id`, `subdomain`, `scheme` (`http` / `https`) and `destination_port`. The server auto-assigns `tcp_port_range = "443,80"`, sets `disable_icmp = true`, and leaves `alias` null.
 
 `gateway` mode (Pangolin >= 1.24, "exit node" in the UI) routes all traffic through the site. The server forces `destination = "0.0.0.0/0"`, `tcp_port_range` and `udp_port_range` to `"*"` and `disable_icmp = false`: leave those unset. `alias`, `domain_id`, `subdomain`, `scheme` and `destination_port` have no use in this mode and are rejected.
+
+`ssh` mode exposes an SSH server: `destination` is the host (IPv4 address, or a hostname together with `alias`), optional when `auth_daemon_mode = "native"`. The server forces `tcp_port_range` to `destination_port` (`"22"` when unset), `udp_port_range = ""` and `disable_icmp = true`. With `auth_daemon_mode = "native"`, or `pam_mode = "push"` with the site auth daemon, the resource takes a single site.
+
+`inference` mode (Pangolin 1.22+) serves AI providers (`ai_provider_ids`) through the exit node: it has no site and no required destination; the server forces `tcp_port_range = "443,80"`, `udp_port_range = ""` and `disable_icmp = true`.
 - `name` (String) The name of the private resource.
-- `site_id` (Number) The site ID this resource belongs to.
 
 ### Optional
 
+- `ai_provider_ids` (Set of Number) IDs of the AI providers attached to an `inference` resource (the providers themselves are managed outside this provider for now). New attachments use the provider's own allow / block lists (`inherit`); existing ones keep their access mode. Leaving the attribute unset keeps the current attachments; `[]` removes them all. Only valid for `mode = "inference"`.
 - `alias` (String) The internal DNS alias (e.g. `myservice.internal`). Required for `cidr` / `host` modes; ignored / null for `http` mode.
-- `auth_daemon_mode` (String) Auth daemon mode: 'site' or 'remote'. Defaults to 'site'.
+- `auth_daemon_mode` (String) Auth daemon mode for `ssh` resources: `site` (the site's Newt), `remote` (a daemon on the destination host, see `auth_daemon_port`) or `native` (the client connects to the host's own SSH server; `destination` becomes optional). Defaults to `site`.
+- `auth_daemon_port` (Number) Port of the remote auth daemon (`auth_daemon_mode = "remote"`). Server-assigned when unset.
 - `destination` (String) The destination: hostname (`host` mode), CIDR (`cidr` mode), or backend IP / hostname (`http` mode). Required in those modes. Leave unset for `gateway` mode, where the server sets `0.0.0.0/0`.
 - `destination_port` (Number) Backend destination port. Required for `mode = http`; ignored for `cidr` / `host`.
 - `disable_icmp` (Boolean) Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes, forces `true` for `mode = http` and `false` for `mode = gateway` (any other value is rejected in those two modes); leaving this unset lets the server pick.
 - `domain_id` (String) ID of the parent domain (use the `pangolin_domains` data source to discover). Required for `mode = http`; ignored for `cidr` / `host`.
+- `enabled` (Boolean) Whether the resource is enabled. New resources are enabled; setting `false` disables the resource right after creating it (the create endpoint has no such field). Removing the attribute keeps the current value: set `enabled = true` to re-enable a disabled resource.
+- `nice_id` (String) The human-readable ID. Generated by the server when unset; letters, digits and dashes only.
 - `pam_mode` (String) PAM (Pluggable Authentication Module) mode for SSH-backed site resources. One of `passthrough` or `push`. 1.19+ only - pre-1.19 servers leave this null.
 - `scheme` (String) Protocol scheme of the upstream backend. Required for `mode = http`; ignored for `cidr` / `host`. One of `http`, `https`.
+- `site_id` (Number, Deprecated) The site this resource belongs to. Deprecated: use `site_ids`, which also supports several sites. When the resource has exactly one site, `site_id` reports it; otherwise it is null. Conflicts with `site_ids`.
+- `site_ids` (Set of Number) The sites this resource is reachable through (several sites need Pangolin 1.19+). Required, through this attribute or `site_id`, in every mode except `inference`, which has no site. Changing the sites updates the resource in place. Conflicts with `site_id`.
+- `ssl` (Boolean) Whether Pangolin terminates TLS for `full_domain` (`http` and `inference` modes; a certificate is requested on create). Ignored in the other modes.
 - `subdomain` (String) Subdomain to host the proxy at - combined with `domain_id` to produce `full_domain`. Required for `mode = http`; ignored for `cidr` / `host`.
 - `tcp_port_range` (String) TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server forces `"443,80"` and for `mode = gateway` it forces `"*"`; any other value is rejected in those modes.
 - `udp_port_range` (String) UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `"*"` and any other value is rejected. For `mode = http` the value has no effect: Pangolin 1.24 stores `""` and older servers store it unused, so a non-empty value only raises a warning and is kept as configured in state.
@@ -93,15 +138,11 @@ resource "pangolin_site_resource" "exit_node" {
 ### Read-Only
 
 - `alias_address` (String) The resolved alias address, when applicable. Null otherwise.
-- `auth_daemon_port` (Number) The auth daemon port (computed by the API).
 - `default_network_id` (Number) The default network ID, when set by the org configuration. Null when unset.
-- `enabled` (Boolean) Whether the resource is enabled. Read-only here; the API returns `true` on creation. Use a future toggle endpoint to disable.
 - `full_domain` (String) The full FQDN of the resource. Null otherwise.
 - `id` (Number) The numeric ID of the site resource.
 - `network_id` (Number) The numeric network ID the resource is bound to.
-- `nice_id` (String) The human-readable ID.
 - `proxy_port` (Number) The proxy-facing port (server-assigned, read-only). The Pangolin API does NOT accept this as a create input - passing it returns `Validation error: Unrecognized key: "proxyPort"`.
-- `ssl` (Boolean) Whether SSL is terminated by the proxy in front of this resource.
 
 ## Import
 

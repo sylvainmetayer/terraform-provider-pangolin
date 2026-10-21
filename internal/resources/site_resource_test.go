@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -86,9 +87,9 @@ func TestHydrateSiteResourceState_HTTPMode_ListResponse(t *testing.T) {
 	if got := m.DefaultNetworkID.ValueInt64(); got != 2 {
 		t.Errorf("DefaultNetworkID = %d", got)
 	}
-	// SiteID derived from SiteIDs[0].
-	if got := m.SiteID.ValueInt64(); got != 5 {
-		t.Errorf("SiteID = %d, want 5 (SiteIDs[0])", got)
+	// Two sites: site_ids holds both, the deprecated site_id is null.
+	if !m.SiteIDs.Equal(int64Set(5, 6)) || !m.SiteID.IsNull() {
+		t.Errorf("SiteIDs = %v, SiteID = %v; want {5,6} and null", m.SiteIDs, m.SiteID)
 	}
 	if got := m.Scheme.ValueString(); got != "https" {
 		t.Errorf("Scheme = %q", got)
@@ -272,8 +273,8 @@ func TestSiteResource_JSONRoundTrip(t *testing.T) {
 
 	m := SitePrivateResourceModel{}
 	hydrateSiteResourceState(&m, &sr)
-	if m.SiteID.ValueInt64() != 5 {
-		t.Errorf("SiteID from list not derived: %d", m.SiteID.ValueInt64())
+	if !m.SiteIDs.Equal(int64Set(5, 6)) {
+		t.Errorf("SiteIDs from list not derived: %v", m.SiteIDs)
 	}
 	if m.Scheme.ValueString() != "https" {
 		t.Errorf("Scheme lost across round-trip")
@@ -328,7 +329,7 @@ func TestBuildCreateSiteResourceRequest_GatewayOmitsForcedFields(t *testing.T) {
 		UDPPortRange: types.StringValue("*"),
 		DisableICMP:  types.BoolValue(false),
 	}
-	raw, err := json.Marshal(buildCreateSiteResourceRequest(plan))
+	raw, err := json.Marshal(mustCreateSiteResourceReq(t, plan))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -362,7 +363,7 @@ func TestBuildCreateSiteResourceRequest_HostModeUnchanged(t *testing.T) {
 		UDPPortRange: types.StringValue("53"),
 		DisableICMP:  types.BoolValue(true),
 	}
-	raw, err := json.Marshal(buildCreateSiteResourceRequest(plan))
+	raw, err := json.Marshal(mustCreateSiteResourceReq(t, plan))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -385,6 +386,35 @@ func TestBuildCreateSiteResourceRequest_HostModeUnchanged(t *testing.T) {
 	}
 }
 
+func TestBuildCreateSiteResourceRequest_HostSendsEmptyPortRangesAndFalse(t *testing.T) {
+	// "" (no ports) and false must reach the server on create: a missing
+	// key gets the server default ("*" for the port ranges), which used to
+	// end in an inconsistent result after apply. Unknown values stay out.
+	plan := SitePrivateResourceModel{
+		Name:         types.StringValue("db"),
+		SiteID:       types.Int64Value(4),
+		Mode:         types.StringValue("host"),
+		Destination:  types.StringValue("10.0.0.5"),
+		Alias:        types.StringValue("db.internal"),
+		TCPPortRange: types.StringValue("5432"),
+		UDPPortRange: types.StringValue(""),
+		DisableICMP:  types.BoolValue(false),
+	}
+	body := bodyOf(t, mustCreateSiteResourceReq(t, plan))
+	if string(body["udpPortRangeString"]) != `""` {
+		t.Errorf("udpPortRangeString = %s, want \"\"", body["udpPortRangeString"])
+	}
+	if string(body["disableIcmp"]) != "false" {
+		t.Errorf("disableIcmp = %s, want false", body["disableIcmp"])
+	}
+
+	plan.TCPPortRange = types.StringUnknown()
+	body = bodyOf(t, mustCreateSiteResourceReq(t, plan))
+	if v, ok := body["tcpPortRangeString"]; ok {
+		t.Errorf("unknown tcp_port_range must be omitted, got %s", v)
+	}
+}
+
 func TestBuildUpdateSiteResourceRequest_GatewaySendsMode(t *testing.T) {
 	plan := SitePrivateResourceModel{
 		ID:           types.Int64Value(9),
@@ -395,7 +425,7 @@ func TestBuildUpdateSiteResourceRequest_GatewaySendsMode(t *testing.T) {
 		TCPPortRange: types.StringValue("*"),
 		UDPPortRange: types.StringValue("*"),
 	}
-	got := buildUpdateSiteResourceRequest(plan)
+	got := mustUpdateSiteResourceReq(t, &plan)
 	if got.Mode != "gateway" {
 		t.Errorf("Mode = %q, want gateway", got.Mode)
 	}
@@ -417,7 +447,7 @@ func TestBuildUpdateSiteResourceRequest_HostModeUnchanged(t *testing.T) {
 		TCPPortRange: types.StringValue("5432"),
 		UDPPortRange: types.StringValue(""),
 	}
-	raw, _ := json.Marshal(buildUpdateSiteResourceRequest(plan))
+	raw, _ := json.Marshal(mustUpdateSiteResourceReq(t, &plan))
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -482,7 +512,7 @@ func TestSiteResourceValidateConfig(t *testing.T) {
 		{"gateway with an unknown destination is checked at apply", map[string]tftypes.Value{
 			"mode": str("gateway"), "destination": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
 		}, ""},
-		{"unsupported mode is left to the OneOf validator", map[string]tftypes.Value{"mode": str("ssh")}, ""},
+		{"unsupported mode is left to the OneOf validator", map[string]tftypes.Value{"mode": str("bogus")}, ""},
 		{"gateway with an alias", map[string]tftypes.Value{"mode": str("gateway"), "alias": str("exit.internal")}, "alias"},
 		{"gateway with a domain", map[string]tftypes.Value{"mode": str("gateway"), "domain_id": str("dom")}, "domain_id"},
 		{"gateway with a subdomain", map[string]tftypes.Value{"mode": str("gateway"), "subdomain": str("exit")}, "subdomain"},
@@ -508,7 +538,11 @@ func TestSiteResourceValidateConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := resource.ValidateConfigRequest{Config: tfsdk.Config{Schema: s, Raw: siteResourceRaw(t, s, tc.set)}}
+			set := map[string]tftypes.Value{"site_id": tftypes.NewValue(tftypes.Number, 1)}
+			for k, v := range tc.set {
+				set[k] = v
+			}
+			req := resource.ValidateConfigRequest{Config: tfsdk.Config{Schema: s, Raw: siteResourceRaw(t, s, set)}}
 			var resp resource.ValidateConfigResponse
 			(&SitePrivateResource{}).ValidateConfig(context.Background(), req, &resp)
 			if tc.wantError == "" {
@@ -600,12 +634,12 @@ func TestGatewayForcedPlanModifiers(t *testing.T) {
 
 func TestCreateSiteResourceErrorDetail(t *testing.T) {
 	// The 1.23 body schema refuses the mode with a generic 400.
-	old := errors.New(`API error (status 400): Validation error: Invalid option: expected one of "host"|"cidr"|"http"|"ssh"|"inference" at "mode"`)
+	old := fmt.Errorf(`API error (status 400): Validation error: Invalid option: expected one of "host"|"cidr"|"http"|"ssh"|"inference" at "mode": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", old); !strings.Contains(got, "Pangolin 1.24") || !strings.HasPrefix(got, old.Error()) {
 		t.Errorf("gateway 400: %q", got)
 	}
-	// The hint does not depend on how the client formats the status.
-	reworded := errors.New(`pangolin: bad request: Validation error: Invalid option at "mode"`)
+	// The hint does not depend on how the server words the validation error.
+	reworded := fmt.Errorf(`Validation error: Invalid option at "mode": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", reworded); !strings.Contains(got, "Pangolin 1.24") {
 		t.Errorf("gateway 400, other formatting: %q", got)
 	}
@@ -614,13 +648,54 @@ func TestCreateSiteResourceErrorDetail(t *testing.T) {
 		t.Errorf("host 400: %q", got)
 	}
 	// A 1.24 server refusing another field: no upgrade hint.
-	otherField := errors.New(`API error (status 400): Validation error: Invalid input: expected number, received string at "siteIds[0]"`)
+	otherField := fmt.Errorf(`API error (status 400): Validation error: Invalid input: expected number, received string at "siteIds[0]": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", otherField); got != otherField.Error() {
 		t.Errorf("gateway 400 on another field: %q", got)
 	}
 	conflict := errors.New("API error (status 409): Alias already in use by another site resource")
 	if got := createSiteResourceErrorDetail("gateway", conflict); got != conflict.Error() {
 		t.Errorf("gateway 409: %q", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// buildUpdateSiteResourceRequest: plan -> wire
+// -----------------------------------------------------------------------------
+
+func TestBuildUpdateSiteResourceRequest_KeepsGrantsAndSendsZeroValues(t *testing.T) {
+	// The update must never carry roleIds / userIds / clientIds (an empty
+	// list would wipe the grants of the _role / _user / _client
+	// resources), and must send "" / false since a missing key means
+	// "unchanged" on the server.
+	plan := SitePrivateResourceModel{
+		Name:           types.StringValue("db"),
+		SiteID:         types.Int64Value(5),
+		Mode:           types.StringValue("host"),
+		Destination:    types.StringValue("10.0.0.5"),
+		Alias:          types.StringValue("db.internal"),
+		TCPPortRange:   types.StringValue(""),
+		UDPPortRange:   types.StringNull(),
+		DisableICMP:    types.BoolValue(false),
+		AuthDaemonMode: types.StringValue("site"),
+	}
+	raw, err := json.Marshal(mustUpdateSiteResourceReq(t, &plan))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"roleIds", "userIds", "clientIds", "udpPortRangeString"} {
+		if v, present := body[k]; present {
+			t.Errorf("%s must be omitted, got %s", k, v)
+		}
+	}
+	if string(body["tcpPortRangeString"]) != `""` || string(body["disableIcmp"]) != "false" {
+		t.Errorf("zero values dropped: %s", raw)
+	}
+	if string(body["name"]) != `"db"` || string(body["alias"]) != `"db.internal"` {
+		t.Errorf("scalars lost: %s", raw)
 	}
 }
 
@@ -637,7 +712,7 @@ func TestSiteResourceValidateConfig_HTTPUDPPortRangeWarns(t *testing.T) {
 		{"unknown", tftypes.NewValue(tftypes.String, tftypes.UnknownValue), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := siteResourceRaw(t, s, map[string]tftypes.Value{"mode": str("http"), "destination": str("10.0.0.5"), "udp_port_range": tc.udp})
+			raw := siteResourceRaw(t, s, map[string]tftypes.Value{"mode": str("http"), "site_id": tftypes.NewValue(tftypes.Number, 1), "destination": str("10.0.0.5"), "udp_port_range": tc.udp})
 			var resp resource.ValidateConfigResponse
 			(&SitePrivateResource{}).ValidateConfig(context.Background(), resource.ValidateConfigRequest{Config: tfsdk.Config{Schema: s, Raw: raw}}, &resp)
 			if resp.Diagnostics.HasError() {
