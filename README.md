@@ -71,6 +71,10 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_idp` | OIDC Identity Provider (global) |
 | `pangolin_idp_org` | IDP-to-organization policy mapping |
 | `pangolin_org_idp` | OIDC IDP scoped to a single organization (single-resource alternative to `pangolin_idp` + `pangolin_idp_org`) |
+| `pangolin_resource_policy` | Shared resource policy: SSO, role / user grants, email whitelist, rules (Enterprise) |
+| `pangolin_resource_policy_password` | Password protection for a resource policy (Enterprise) |
+| `pangolin_resource_policy_pincode` | PIN-code protection for a resource policy (Enterprise) |
+| `pangolin_resource_policy_header_auth` | Header-based authentication for a resource policy (Enterprise) |
 
 ## Data Sources
 
@@ -101,6 +105,8 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_logs_analytics` | Aggregate analytics rollup (per-country, per-day, totals) |
 | `pangolin_blueprints` | List the blueprint (declarative apply) audit records for the org |
 | `pangolin_blueprint` | Single blueprint lookup by ID (exposes raw `contents` + apply outcome) |
+| `pangolin_resource_policies` | List the shared resource policies of the org with their attached resources (Enterprise) |
+| `pangolin_resource_policy` | Single resource policy lookup by ID (grants, whitelist, rules, which secrets are set) (Enterprise) |
 
 ## Example
 
