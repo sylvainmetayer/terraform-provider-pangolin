@@ -124,3 +124,15 @@ func TestProtocolMatchesModeValidator(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPResourceSchema_ProtocolDeprecated(t *testing.T) {
+	var resp resource.SchemaResponse
+	(&HTTPResource{}).Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	attr, ok := resp.Schema.Attributes["protocol"]
+	if !ok {
+		t.Fatal("protocol attribute missing")
+	}
+	if got := attr.GetDeprecationMessage(); got != httpResourceProtocolDeprecation {
+		t.Errorf("DeprecationMessage = %q, want %q", got, httpResourceProtocolDeprecation)
+	}
+}

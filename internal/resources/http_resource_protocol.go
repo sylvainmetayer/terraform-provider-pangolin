@@ -18,6 +18,11 @@ import (
 // "tcp" for http, where it is ignored. Create, Read and Import therefore
 // store the same value, and the plan never flips.
 
+// httpResourceProtocolDeprecation is the deprecation message of the
+// `protocol` attribute.
+const httpResourceProtocolDeprecation = "Use `mode` instead. `protocol` is derived from `mode` " +
+	"and will be removed in the next major version."
+
 // resolveHTTPResourceProtocol picks the state value for `protocol`.
 // For L4 modes it follows mode. Otherwise a value echoed by a pre-1.19
 // server wins, then the known prior (planned / state) value, then "tcp".

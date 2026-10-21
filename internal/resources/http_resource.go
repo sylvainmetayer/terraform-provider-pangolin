@@ -166,11 +166,12 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"protocol": schema.StringAttribute{
-				Description: "The L4 protocol (tcp or udp). Legacy alias: Pangolin derives the transport " +
-					"from `mode`, so this follows `mode` for `tcp` / `udp` resources (setting another value " +
-					"is an error) and is `tcp` for `http`, where it is ignored. Leave it unset.",
-				Optional: true,
-				Computed: true,
+				Description: "Deprecated: use `mode`. The L4 protocol (tcp or udp). Legacy alias: Pangolin " +
+					"derives the transport from `mode`, so this follows `mode` for `tcp` / `udp` resources " +
+					"(setting another value is an error) and is `tcp` for `http`, where it is ignored. Leave it unset.",
+				DeprecationMessage: httpResourceProtocolDeprecation,
+				Optional:           true,
+				Computed:           true,
 				PlanModifiers: []planmodifier.String{
 					protocolFromModeModifier{},
 				},
