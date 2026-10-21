@@ -71,8 +71,9 @@ func (r *OrgIDPResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"create) + `pangolin_idp_org` (bind to an org): the upstream `/org/{org}/idp/oidc` " +
 			"endpoint auto-binds the new IDP to the calling org at creation time, removing the " +
 			"need for a separate binding resource.\n\n" +
-			"> **Note:** `client_secret` cannot be recovered after import and must be set " +
-			"manually in config to avoid spurious diffs.",
+			"> **Note:** Pangolin returns `client_secret` decrypted, so it is read back on import " +
+			"and on refresh (a secret rotated in the UI shows as drift). The Terraform state holds " +
+			"the secret and must be protected accordingly.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The numeric IDP ID.",
@@ -276,7 +277,6 @@ func (r *OrgIDPResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 
 	hydrateOrgIDPState(&state, detail)
-	// client_secret is not recoverable from the API - preserve existing.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -355,7 +355,7 @@ func (r *OrgIDPResource) ImportState(ctx context.Context, req resource.ImportSta
 	state := OrgIDPResourceModel{
 		ID:           types.Int64Value(int64(detail.IDP.IDPId)),
 		OrgID:        types.StringValue(orgID),
-		ClientSecret: types.StringValue(""), // not recoverable after import
+		ClientSecret: types.StringValue(""), // filled from the GET payload below
 		RedirectURL:  types.StringValue(""), // not returned by GET
 	}
 	hydrateOrgIDPState(&state, detail)
@@ -364,14 +364,19 @@ func (r *OrgIDPResource) ImportState(ctx context.Context, req resource.ImportSta
 }
 
 // hydrateOrgIDPState copies every server-owned field from a freshly-
-// fetched [client.OrgIDPDetail] into the TF state model. client_secret
-// and redirect_url are caller-managed and left untouched.
+// fetched [client.OrgIDPDetail] into the TF state model. The server
+// returns client_secret decrypted, so it is mapped when present (an
+// empty value keeps the prior one); redirect_url is not returned and
+// left untouched.
 func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail) {
 	state.Name = types.StringValue(detail.IDP.Name)
 	state.AutoProvision = types.BoolValue(detail.IDP.AutoProvision)
 	state.Tags = types.StringValue(detail.IDP.Tags)
-	state.Variant = types.StringValue(detail.IDP.Variant)
+	state.Variant = types.StringValue(resolveIDPVariant(&detail.IDP, &detail.IDPOidcConfig))
 	state.ClientID = types.StringValue(detail.IDPOidcConfig.ClientID)
+	if detail.IDPOidcConfig.ClientSecret != "" {
+		state.ClientSecret = types.StringValue(detail.IDPOidcConfig.ClientSecret)
+	}
 	state.AuthURL = types.StringValue(detail.IDPOidcConfig.AuthURL)
 	state.TokenURL = types.StringValue(detail.IDPOidcConfig.TokenURL)
 	state.IdentifierPath = types.StringValue(detail.IDPOidcConfig.IdentifierPath)

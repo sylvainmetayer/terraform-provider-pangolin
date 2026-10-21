@@ -721,15 +721,7 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	m.Name = types.StringValue(res.Name)
 	m.FullDomain = types.StringValue(res.FullDomain)
 	m.DomainID = types.StringValue(res.DomainID)
-	// Pangolin omits the legacy protocol field for HTTP resources and some
-	// newer server builds represent the transport only through mode. Keep the
-	// imported/refreshed value aligned with the schema's "tcp" default while
-	// still preserving UDP resources.
-	protocol := "tcp"
-	if res.Protocol == "udp" || res.Mode == "udp" {
-		protocol = "udp"
-	}
-	m.Protocol = types.StringValue(protocol)
+	m.Protocol = resolveHTTPResourceProtocol(m.Protocol, res)
 	if res.Subdomain != "" {
 		m.Subdomain = types.StringValue(res.Subdomain)
 	} else {
@@ -811,4 +803,23 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 		m.Headers = nil
 	}
 	return m
+}
+
+// resolveHTTPResourceProtocol picks the state value for `protocol`.
+// Pangolin 1.24 has no protocol column (the transport lives in mode)
+// and never echoes the field, so a server value wins only when present.
+// Otherwise the planned / prior value is kept, so plan and apply agree
+// (a UDP resource with the "tcp" schema default stays "tcp"). Only an
+// import, which has no prior value, derives the protocol from mode.
+func resolveHTTPResourceProtocol(prior types.String, res *client.Resource) types.String {
+	if res.Protocol != "" {
+		return types.StringValue(res.Protocol)
+	}
+	if !prior.IsNull() && !prior.IsUnknown() {
+		return prior
+	}
+	if res.Mode == "udp" {
+		return types.StringValue("udp")
+	}
+	return types.StringValue("tcp")
 }

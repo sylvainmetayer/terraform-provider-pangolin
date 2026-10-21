@@ -2719,7 +2719,12 @@ type IDP struct {
 }
 
 // IDPOidcConfig represents the OIDC configuration of an IDP.
+//
+// The single GET endpoints (/idp/{id}, /org/{org}/idp/{id}) return the
+// clientId and clientSecret decrypted, and carry the variant here
+// (idpOidcConfig.variant column) rather than on the idp row.
 type IDPOidcConfig struct {
+	Variant        string `json:"variant,omitempty"`
 	ClientID       string `json:"clientId"`
 	ClientSecret   string `json:"clientSecret"`
 	AuthURL        string `json:"authUrl"`

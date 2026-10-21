@@ -18,13 +18,13 @@ func TestHydrateOrgIDPState_Full(t *testing.T) {
 			IDPId:         5,
 			Name:          "google",
 			Type:          "oidc",
-			Variant:       "google",
 			AutoProvision: true,
 			Tags:          "prod",
 		},
 		IDPOidcConfig: client.IDPOidcConfig{
+			Variant:        "google", // GET carries the variant here, not on idp
 			ClientID:       "cid",
-			ClientSecret:   "secret", // API sometimes returns it - we ignore.
+			ClientSecret:   "secret", // returned decrypted by GET
 			AuthURL:        "https://a",
 			TokenURL:       "https://t",
 			IdentifierPath: "sub",
@@ -39,8 +39,8 @@ func TestHydrateOrgIDPState_Full(t *testing.T) {
 			OrgMapping:  strPtr(`{"acme":"org1"}`),
 		},
 	}
-	// ClientSecret and RedirectURL are caller-managed; leave the
-	// existing state untouched. Seed a value we can assert survives.
+	// ClientSecret follows the server; RedirectURL is not returned and
+	// must survive. Seed both to assert each contract.
 	state := OrgIDPResourceModel{
 		ClientSecret: types.StringValue("kept-by-user"),
 		RedirectURL:  types.StringValue("https://callback"),
@@ -83,9 +83,8 @@ func TestHydrateOrgIDPState_Full(t *testing.T) {
 	if state.OrgMapping.ValueString() != `{"acme":"org1"}` {
 		t.Errorf("OrgMapping = %q", state.OrgMapping.ValueString())
 	}
-	// Caller-managed fields must be untouched.
-	if state.ClientSecret.ValueString() != "kept-by-user" {
-		t.Errorf("ClientSecret must not be overwritten by hydrate, got %q", state.ClientSecret.ValueString())
+	if state.ClientSecret.ValueString() != "secret" {
+		t.Errorf("ClientSecret = %q, want the server value", state.ClientSecret.ValueString())
 	}
 	if state.RedirectURL.ValueString() != "https://callback" {
 		t.Errorf("RedirectURL must not be overwritten by hydrate, got %q", state.RedirectURL.ValueString())
@@ -107,8 +106,14 @@ func TestHydrateOrgIDPState_NullRoleAndOrgMapping(t *testing.T) {
 			OrgMapping:  nil,
 		},
 	}
-	state := OrgIDPResourceModel{}
+	state := OrgIDPResourceModel{ClientSecret: types.StringValue("prior")}
 	hydrateOrgIDPState(&state, detail)
+	if state.ClientSecret.ValueString() != "prior" {
+		t.Errorf("empty server secret must keep the prior value, got %q", state.ClientSecret.ValueString())
+	}
+	if state.Variant.ValueString() != "oidc" {
+		t.Errorf("missing variant must read as oidc, got %q", state.Variant.ValueString())
+	}
 	if !state.RoleMapping.IsNull() {
 		t.Errorf("RoleMapping expected null")
 	}

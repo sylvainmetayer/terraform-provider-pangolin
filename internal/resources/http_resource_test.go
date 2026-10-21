@@ -269,15 +269,43 @@ func TestApplyHTTPResourceResponse_L4TCPMode(t *testing.T) {
 	}
 }
 
-func TestApplyHTTPResourceResponse_L4UDPModeNormalizesProtocol(t *testing.T) {
-	res := &client.Resource{
-		ResourceID: 56,
-		NiceID:     "udp-x",
-		Name:       "udp-service",
-		Mode:       "udp",
+// Import: no prior protocol, so it is derived from mode.
+func TestApplyHTTPResourceResponse_ImportDerivesProtocolFromMode(t *testing.T) {
+	for _, tc := range []struct{ mode, want string }{
+		{"udp", "udp"},
+		{"tcp", "tcp"},
+		{"http", "tcp"},
+	} {
+		res := &client.Resource{ResourceID: 56, Name: "x", Mode: tc.mode}
+		m := applyHTTPResourceResponse(HTTPResourceModel{ID: types.Int64Value(56)}, res)
+		if got := m.Protocol.ValueString(); got != tc.want {
+			t.Errorf("mode %s: Protocol = %q, want %q", tc.mode, got, tc.want)
+		}
 	}
-	m := applyHTTPResourceResponse(HTTPResourceModel{ID: types.Int64Value(56)}, res)
-	if got := m.Protocol.ValueString(); got != "udp" {
+}
+
+// Create / refresh: the server never echoes protocol, so the planned or
+// prior value is kept. A UDP resource with protocol left out plans the
+// "tcp" schema default and must not come back as "udp".
+func TestApplyHTTPResourceResponse_KeepsPlannedProtocol(t *testing.T) {
+	for _, tc := range []struct{ mode, planned string }{
+		{"udp", "tcp"},
+		{"tcp", "udp"},
+		{"http", "udp"},
+	} {
+		res := &client.Resource{ResourceID: 57, Name: "x", Mode: tc.mode}
+		plan := HTTPResourceModel{ID: types.Int64Value(57), Protocol: types.StringValue(tc.planned)}
+		m := applyHTTPResourceResponse(plan, res)
+		if got := m.Protocol.ValueString(); got != tc.planned {
+			t.Errorf("mode %s: Protocol = %q, want planned %q", tc.mode, got, tc.planned)
+		}
+	}
+}
+
+func TestApplyHTTPResourceResponse_ServerProtocolWins(t *testing.T) {
+	res := &client.Resource{ResourceID: 58, Name: "x", Mode: "tcp", Protocol: "udp"}
+	plan := HTTPResourceModel{ID: types.Int64Value(58), Protocol: types.StringValue("tcp")}
+	if got := applyHTTPResourceResponse(plan, res).Protocol.ValueString(); got != "udp" {
 		t.Errorf("Protocol = %q, want udp", got)
 	}
 }
