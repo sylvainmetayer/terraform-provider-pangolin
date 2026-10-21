@@ -1421,6 +1421,336 @@ func TestCreateTarget_HCFieldsOnWire(t *testing.T) {
 	}
 }
 
+// --- Standalone health checks ---
+
+// healthCheckRow is a list row shaped like listHealthChecks.ts emits it
+// for a standalone check (resource* fields null).
+func healthCheckRow(id int, name string) map[string]any {
+	return map[string]any{
+		"targetHealthCheckId": id, "name": name,
+		"siteId": 4, "siteName": "homelab", "siteNiceId": "smart-salamander",
+		"hcEnabled": true, "hcHealth": "healthy", "hcMode": "http",
+		"hcHostname": "10.0.0.5", "hcPort": 8080, "hcPath": "/health",
+		"hcScheme": "http", "hcMethod": "GET", "hcInterval": 30,
+		"hcUnhealthyInterval": 10, "hcTimeout": 5,
+		"hcHeaders":         `[{"name":"X-Probe","value":"yes"}]`,
+		"hcFollowRedirects": true, "hcStatus": 200, "hcTlsServerName": nil,
+		"hcHealthyThreshold": 2, "hcUnhealthyThreshold": 3,
+		"resourceId": nil, "resourceName": nil, "resourceNiceId": nil,
+	}
+}
+
+func TestListHealthChecks_FiltersAndFullShape(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/v1/org/test-org/health-checks" {
+			t.Errorf("method/path = %s %s", r.Method, r.URL.Path)
+		}
+		q := r.URL.Query()
+		for k, want := range map[string]string{
+			"query": "db", "hcMode": "tcp", "siteId": "4", "resourceId": "9",
+			"hcHealth": "unhealthy", "hcEnabled": "false", "limit": "1000", "offset": "0",
+		} {
+			if got := q.Get(k); got != want {
+				t.Errorf("query %s = %q, want %q", k, got, want)
+			}
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"healthChecks": []map[string]any{healthCheckRow(12, "db")},
+			"pagination":   map[string]any{"total": 1, "limit": 1000, "offset": 0},
+		})
+	})
+
+	disabled := false
+	got, err := c.ListHealthChecks(context.Background(), &ListHealthChecksOptions{
+		Query: "db", Mode: "tcp", SiteID: 4, ResourceID: 9, Health: "unhealthy", Enabled: &disabled,
+	})
+	if err != nil {
+		t.Fatalf("ListHealthChecks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	hc := got[0]
+	if hc.HealthCheckID != 12 || hc.Name != "db" || *hc.SiteID != 4 || *hc.SiteNiceID != "smart-salamander" {
+		t.Errorf("identity fields wrong: %+v", hc)
+	}
+	if !hc.HCEnabled || hc.HCHealth != "healthy" || *hc.HCPort != 8080 || *hc.HCStatus != 200 {
+		t.Errorf("probe fields wrong: %+v", hc)
+	}
+	if hc.HCTLSServerName != nil || hc.ResourceID != nil {
+		t.Errorf("null fields should decode to nil: tls=%v resource=%v", hc.HCTLSServerName, hc.ResourceID)
+	}
+	headers, err := ParseTargetHCHeaders(hc.HCHeaders)
+	if err != nil || len(headers) != 1 || headers[0].Name != "X-Probe" {
+		t.Errorf("headers = %+v err=%v", headers, err)
+	}
+}
+
+func TestListHealthChecks_WalksPagination(t *testing.T) {
+	orig := healthCheckPageSize
+	healthCheckPageSize = 2
+	t.Cleanup(func() { healthCheckPageSize = orig })
+
+	var calls int32
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		var rows []map[string]any
+		switch r.URL.Query().Get("offset") {
+		case "0":
+			rows = []map[string]any{healthCheckRow(5, "a"), healthCheckRow(4, "b")}
+		case "2":
+			rows = []map[string]any{healthCheckRow(3, "c")}
+		default:
+			t.Errorf("unexpected offset %q", r.URL.Query().Get("offset"))
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"healthChecks": rows,
+			"pagination":   map[string]any{"total": 3, "limit": 2},
+		})
+	})
+
+	got, err := c.ListHealthChecks(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListHealthChecks: %v", err)
+	}
+	if len(got) != 3 || got[2].HealthCheckID != 3 {
+		t.Errorf("got %+v", got)
+	}
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Errorf("calls = %d, want 2", n)
+	}
+}
+
+func TestGetHealthCheck_NotFoundWhenMissing(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"healthChecks": []map[string]any{healthCheckRow(5, "a")},
+			"pagination":   map[string]any{"total": 1},
+		})
+	})
+	if hc, err := c.GetHealthCheck(context.Background(), 5); err != nil || hc.Name != "a" {
+		t.Errorf("GetHealthCheck(5) = %+v, %v", hc, err)
+	}
+	if _, err := c.GetHealthCheck(context.Background(), 6); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetHealthCheck(6) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetHealthCheck_ConfirmsMissWithSecondWalk(t *testing.T) {
+	// The first walk misses the row (a concurrent delete shifted the
+	// page); the second walk sees it.
+	walks := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		walks++
+		rows := []map[string]any{healthCheckRow(9, "other")}
+		if walks > 1 {
+			rows = append(rows, healthCheckRow(5, "a"))
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"healthChecks": rows,
+			"pagination":   map[string]any{"total": len(rows)},
+		})
+	})
+	hc, err := c.GetHealthCheck(context.Background(), 5)
+	if err != nil || hc.Name != "a" {
+		t.Fatalf("GetHealthCheck(5) = %+v, %v", hc, err)
+	}
+	if walks != 2 {
+		t.Errorf("walks = %d, want 2", walks)
+	}
+}
+
+func TestListHealthChecks_OSSAnswers404(t *testing.T) {
+	disableRetryBackoff(t)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	if _, err := c.ListHealthChecks(context.Background(), nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetHealthCheck_ListRoute404IsNotRowMissing(t *testing.T) {
+	disableRetryBackoff(t)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	_, err := c.GetHealthCheck(context.Background(), 5)
+	if !errors.Is(err, ErrHealthChecksUnavailable) {
+		t.Errorf("err = %v, want ErrHealthChecksUnavailable", err)
+	}
+	// Must not read as "row gone", or Read would drop the state.
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v must not wrap ErrNotFound", err)
+	}
+}
+
+func TestHealthCheck_DecodesNativeArrayHeaders(t *testing.T) {
+	var hc HealthCheck
+	raw := `{"targetHealthCheckId":5,"name":"a","hcHeaders":[{"name":"X","value":"y"}]}`
+	if err := json.Unmarshal([]byte(raw), &hc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, err := ParseTargetHCHeaders(hc.HCHeaders)
+	if err != nil || len(got) != 1 || got[0].Name != "X" || got[0].Value != "y" {
+		t.Errorf("headers = %+v err=%v", got, err)
+	}
+
+	hc = HealthCheck{}
+	raw = `{"targetHealthCheckId":5,"name":"a","hcHeaders":"[{\"name\":\"X\",\"value\":\"y\"}]"}`
+	if err := json.Unmarshal([]byte(raw), &hc); err != nil {
+		t.Fatalf("unmarshal string form: %v", err)
+	}
+	if got, err := ParseTargetHCHeaders(hc.HCHeaders); err != nil || len(got) != 1 {
+		t.Errorf("string form headers = %+v err=%v", got, err)
+	}
+	if hc.HealthCheckID != 5 || hc.Name != "a" {
+		t.Errorf("other fields lost: %+v", hc)
+	}
+}
+
+func TestCreateHealthCheck_NotRetriedOn5xx(t *testing.T) {
+	disableRetryBackoff(t)
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeEnvelope(t, w, http.StatusBadGateway, nil)
+	})
+	name, site := "db", 4
+	if _, err := c.CreateHealthCheck(context.Background(), &HealthCheckRequest{Name: &name, SiteID: &site}); !errors.Is(err, ErrServer) {
+		t.Errorf("err = %v, want ErrServer", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (a retried create could insert a second probe)", calls)
+	}
+}
+
+func TestCreateHealthCheck_BodyAndID(t *testing.T) {
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" || r.URL.Path != "/v1/org/test-org/health-check" {
+			t.Errorf("method/path = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusCreated, map[string]any{"targetHealthCheckId": 42})
+	})
+
+	name, site, port := "db", 4, 5432
+	mode := "tcp"
+	id, err := c.CreateHealthCheck(context.Background(), &HealthCheckRequest{
+		Name: &name, SiteID: &site, HCMode: &mode, HCPort: &port,
+	})
+	if err != nil {
+		t.Fatalf("CreateHealthCheck: %v", err)
+	}
+	if id != 42 {
+		t.Errorf("id = %d, want 42", id)
+	}
+	if string(gotBody["name"]) != `"db"` || string(gotBody["siteId"]) != "4" || string(gotBody["hcPort"]) != "5432" {
+		t.Errorf("body = %v", gotBody)
+	}
+	// hcHeaders / hcStatus are always present (null clears them).
+	for _, k := range []string{"hcHeaders", "hcStatus"} {
+		if string(gotBody[k]) != "null" {
+			t.Errorf("%s wire = %q, want null", k, gotBody[k])
+		}
+	}
+	for _, k := range []string{"hcHostname", "hcPath", "hcEnabled", "hcTlsServerName"} {
+		if _, ok := gotBody[k]; ok {
+			t.Errorf("body should not contain %q (left unset)", k)
+		}
+	}
+}
+
+func TestCreateHealthCheck_MissingIDIsAnError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusCreated, map[string]any{"healthCheckId": 42})
+	})
+	name, site := "db", 4
+	if _, err := c.CreateHealthCheck(context.Background(), &HealthCheckRequest{Name: &name, SiteID: &site}); err == nil {
+		t.Error("want an error when the response carries no targetHealthCheckId")
+	}
+}
+
+func TestUpdateHealthCheck_PathAndResponse(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/v1/org/test-org/health-check/42" {
+			t.Errorf("method/path = %s %s", r.Method, r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"targetHealthCheckId": 42, "name": "db", "siteId": 4,
+			"hcEnabled": false, "hcHealth": "unknown", "hcMode": "tcp",
+			"hcHostname": "", "hcPort": 5432, "hcHeaders": nil, "hcStatus": nil,
+		})
+	})
+
+	hc, err := c.UpdateHealthCheck(context.Background(), 42, &HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("UpdateHealthCheck: %v", err)
+	}
+	if hc.HealthCheckID != 42 || hc.HCHealth != "unknown" || *hc.HCHostname != "" || hc.HCHeaders != nil {
+		t.Errorf("hc = %+v", hc)
+	}
+}
+
+func TestDeleteHealthCheck_Path(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" || r.URL.Path != "/v1/org/test-org/health-check/42" {
+			t.Errorf("method/path = %s %s", r.Method, r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, nil)
+	})
+	if err := c.DeleteHealthCheck(context.Background(), 42); err != nil {
+		t.Fatalf("DeleteHealthCheck: %v", err)
+	}
+}
+
+func TestGetHealthCheckStatusHistory_QueryAndShape(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org/test-org/health-check/42/status-history" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.RawQuery; got != "days=7&tzOffsetMinutes=120" {
+			t.Errorf("query = %q", got)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"entityType": "health_check", "entityId": 42,
+			"overallUptimePercent": 99.5, "totalDowntimeSeconds": 300,
+			"days": []map[string]any{{
+				"date": "2026-10-20", "uptimePercent": 99.65, "totalDowntimeSeconds": 300,
+				"status":          "degraded",
+				"downtimeWindows": []map[string]any{{"start": 1760000000, "end": nil, "status": "unhealthy"}},
+			}},
+		})
+	})
+
+	days, tz := 7, 120
+	h, err := c.GetHealthCheckStatusHistory(context.Background(), 42, &days, &tz)
+	if err != nil {
+		t.Fatalf("GetHealthCheckStatusHistory: %v", err)
+	}
+	if h.OverallUptimePercent != 99.5 || len(h.Days) != 1 || h.Days[0].Status != "degraded" {
+		t.Errorf("history = %+v", h)
+	}
+	if w := h.Days[0].DowntimeWindows; len(w) != 1 || w[0].Start != 1760000000 || w[0].End != nil {
+		t.Errorf("windows = %+v", w)
+	}
+}
+
+func TestGetHealthCheckStatusHistory_NoQueryByDefault(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("query = %q, want empty", r.URL.RawQuery)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"days": []any{}})
+	})
+	if _, err := c.GetHealthCheckStatusHistory(context.Background(), 42, nil, nil); err != nil {
+		t.Fatalf("GetHealthCheckStatusHistory: %v", err)
+	}
+}
+
 // --- User extended shape + GetUserByUsername tests ---
 
 func TestListUsers_ExtendedFields(t *testing.T) {

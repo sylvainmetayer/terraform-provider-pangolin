@@ -47,6 +47,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_site` | Site (Newt tunnel connector) |
 | `pangolin_resource` | HTTP resource (public reverse proxy endpoint) |
 | `pangolin_target` | Backend target for an HTTP resource |
+| `pangolin_health_check` | Standalone health check run by a site (Enterprise) |
 | `pangolin_site_resource` | Private site resource (TCP/UDP/SSH via VPN) |
 | `pangolin_role` | Role |
 | `pangolin_user` | User |
@@ -83,6 +84,8 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_site` | Single site lookup by nice ID (full live payload) |
 | `pangolin_resources` | List all HTTP resources |
 | `pangolin_resource_targets` | List backend targets of a resource (with health-check + routing detail) |
+| `pangolin_health_checks` | List standalone and target-attached health checks (Enterprise) |
+| `pangolin_health_check_status_history` | Daily uptime history of a health check (Enterprise) |
 | `pangolin_resource_roles` | List roles granted access to a resource |
 | `pangolin_site_resources` | List all private site resources |
 | `pangolin_roles` | List all roles |
