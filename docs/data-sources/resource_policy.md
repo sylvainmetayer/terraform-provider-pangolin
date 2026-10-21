@@ -3,12 +3,12 @@
 page_title: "pangolin_resource_policy Data Source - pangolin"
 subcategory: ""
 description: |-
-  Looks up a single Pangolin resource policy (Enterprise) by ID. Secrets are never returned: has_password, has_pincode and has_header_auth only tell whether one is set. To browse the shared policies of the org, use pangolin_resource_policies.
+  Looks up a single shared Pangolin resource policy (Enterprise) by ID; the inline default policy of a resource is refused. Secrets are never returned: has_password, has_pincode and has_header_auth only tell whether one is set. To browse the shared policies of the org, use pangolin_resource_policies.
 ---
 
 # pangolin_resource_policy (Data Source)
 
-Looks up a single Pangolin resource policy (Enterprise) by ID. Secrets are never returned: `has_password`, `has_pincode` and `has_header_auth` only tell whether one is set. To browse the shared policies of the org, use `pangolin_resource_policies`.
+Looks up a single shared Pangolin resource policy (Enterprise) by ID; the inline default policy of a resource is refused. Secrets are never returned: `has_password`, `has_pincode` and `has_header_auth` only tell whether one is set. To browse the shared policies of the org, use `pangolin_resource_policies`.
 
 ## Example Usage
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -405,9 +406,10 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"resource_policy_id": schema.Int64Attribute{
 				Description: "ID of the shared resource policy (`pangolin_resource_policy`, Enterprise) this resource is attached to. " +
-					"Set a policy ID to attach the resource; leave it unset to keep the resource on its own inline policy. " +
-					"The attribute is authoritative: removing it detaches the resource, and an attachment made outside " +
-					"Terraform is removed on the next apply.\n\n" +
+					"Set a policy ID to attach the resource, or `0` to detach it and fall back to its own inline policy. " +
+					"Leaving it unset keeps the current attachment, including one made outside Terraform, so upgrading " +
+					"the provider or omitting the attribute never detaches a resource. Only shared policies are accepted: " +
+					"the inline default policy of another resource is refused before any change.\n\n" +
 					"> **Note:** Pangolin wipes the resource-level password, PIN code, header auth, email whitelist, rules and " +
 					"user / role grants (except the admin role) whenever the attachment changes, so the policy fully governs " +
 					"access. Resource-level `pangolin_resource_password`, `pangolin_resource_rule`, `pangolin_resource_role` " +
@@ -415,8 +417,12 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					"`email_whitelist_enabled`, `apply_rules` and `skip_to_idp_id` set on this resource override the shared " +
 					"policy for this resource only.",
 				Optional: true,
+				Computed: true,
 				Validators: []validator.Int64{
-					int64validator.AtLeast(1),
+					int64validator.AtLeast(0),
+				},
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
 				},
 			},
 			"default_resource_policy_id": schema.Int64Attribute{
@@ -479,6 +485,10 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// Update call - buildHTTPResourceUpdateRequest picks them up
 	// from the plan.
 
+	if r.checkSharedPolicy(ctx, plan.ResourcePolicyID, &resp.Diagnostics); resp.Diagnostics.HasError() {
+		return
+	}
+
 	resource, err := r.client.CreateResource(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create resource", err.Error())
@@ -498,13 +508,18 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// So we hydrate from the Create response directly and skip the
 	// Update round-trip. L7 (http) still uses the historical
 	// Create + Update pattern so user-set sso/ssl/etc. are pushed.
-	// A shared policy is attached through the same POST, which
-	// accepts `resourcePolicyId` for every mode.
+	// A shared policy is attached through POST /resource/{id}, which
+	// accepts `resourcePolicyId` for every mode. For http it goes in
+	// its own call first: see attachResourcePolicy.
 	policyID := resourcePolicyIDUpdate(plan.ResourcePolicyID, types.Int64Null())
 	if mode == "http" {
-		updateReq := buildHTTPResourceUpdateRequest(plan)
-		updateReq.ResourcePolicyID = policyID
-		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), updateReq)
+		if policyID != nil {
+			if _, err := r.attachResourcePolicy(ctx, plan, policyID); err != nil {
+				resp.Diagnostics.AddError("Failed to attach resource policy after creation", err.Error())
+				return
+			}
+		}
+		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), buildHTTPResourceUpdateRequest(plan))
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
 			return
@@ -560,13 +575,24 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// them so we don't 400 on an unrelated field the user could not
 	// have written anyway.
 	updateReq := buildHTTPResourceUpdateRequest(plan)
-	if plan.Mode.ValueString() != "http" {
-		updateReq = &client.UpdateResourceRequest{
-			Name:    plan.Name.ValueString(),
-			Enabled: updateReq.Enabled,
+	policyID := resourcePolicyIDUpdate(plan.ResourcePolicyID, prior.ResourcePolicyID)
+	if policyID != nil {
+		if r.checkSharedPolicy(ctx, plan.ResourcePolicyID, &resp.Diagnostics); resp.Diagnostics.HasError() {
+			return
 		}
 	}
-	updateReq.ResourcePolicyID = resourcePolicyIDUpdate(plan.ResourcePolicyID, prior.ResourcePolicyID)
+	if plan.Mode.ValueString() != "http" {
+		updateReq = &client.UpdateResourceRequest{
+			Name:             plan.Name.ValueString(),
+			Enabled:          updateReq.Enabled,
+			ResourcePolicyID: policyID,
+		}
+	} else if policyID != nil {
+		if _, err := r.attachResourcePolicy(ctx, plan, policyID); err != nil {
+			resp.Diagnostics.AddError("Failed to update resource policy attachment", err.Error())
+			return
+		}
+	}
 	res, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update resource", err.Error())
@@ -737,25 +763,72 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 	return req
 }
 
+// attachResourcePolicy sends a policy (de)attachment on its own. The
+// http update handler decides whether sso, email_whitelist_enabled,
+// apply_rules and skip_to_idp_id go to the inline policy or become
+// overrides from the attachment as it was before the request, so
+// changing both in one POST would put those settings in the wrong place.
+// checkSharedPolicy refuses, before any write, an attachment to a
+// policy that is not a shared one (another resource's inline default
+// policy, which the server would accept). 0, null and unknown are no-ops.
+func (r *HTTPResource) checkSharedPolicy(ctx context.Context, id types.Int64, diags *diag.Diagnostics) {
+	if policyIDOrZero(id) == 0 {
+		return
+	}
+	shared, err := r.client.IsSharedResourcePolicy(ctx, int(id.ValueInt64()))
+	if err != nil {
+		diags.AddError("Failed to check resource policy", err.Error())
+		return
+	}
+	if !shared {
+		diags.AddAttributeError(path.Root("resource_policy_id"), "Not a shared resource policy",
+			fmt.Sprintf("Resource policy %d is not a shared policy of this organization (it may be the inline "+
+				"default policy of another resource). Use the ID of a `pangolin_resource_policy`.", id.ValueInt64()))
+	}
+}
+
+func (r *HTTPResource) attachResourcePolicy(ctx context.Context, plan HTTPResourceModel, policyID *json.RawMessage) (*client.Resource, error) {
+	return r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), &client.UpdateResourceRequest{
+		Name:             plan.Name.ValueString(),
+		ResourcePolicyID: policyID,
+	})
+}
+
 // resourcePolicyIDUpdate returns the resourcePolicyId payload value
-// for a planned attachment, or nil when it does not change. A null
-// plan detaches a resource that the prior state shows as attached.
+// for a planned attachment, or nil when it does not change. Null or
+// unknown (attribute unset) keeps the current attachment; 0 detaches
+// the resource and is sent as an explicit null.
 func resourcePolicyIDUpdate(plan, prior types.Int64) *json.RawMessage {
-	if plan.IsUnknown() {
+	if plan.IsUnknown() || plan.IsNull() {
 		return nil
 	}
-	priorAttached := !prior.IsUnknown() && !prior.IsNull()
-	if plan.IsNull() {
-		if priorAttached {
-			return client.ResourcePolicyIDValue(nil)
-		}
+	if plan.ValueInt64() == policyIDOrZero(prior) {
 		return nil
 	}
-	if priorAttached && plan.ValueInt64() == prior.ValueInt64() {
-		return nil
+	if plan.ValueInt64() == 0 {
+		return client.ResourcePolicyIDValue(nil)
 	}
 	id := int(plan.ValueInt64())
 	return client.ResourcePolicyIDValue(&id)
+}
+
+// policyIDOrZero maps "no shared policy" (null, unknown or 0) to 0.
+func policyIDOrZero(v types.Int64) int64 {
+	if v.IsNull() || v.IsUnknown() {
+		return 0
+	}
+	return v.ValueInt64()
+}
+
+// resourcePolicyIDFromServer maps the server's resourcePolicyId into
+// the model. A detached resource reads back null; when the model holds
+// the `0` the user configured to detach it, the 0 is kept so the plan
+// stays clean.
+func resourcePolicyIDFromServer(current types.Int64, server *int) types.Int64 {
+	if server == nil && !current.IsUnknown() && !current.IsNull() && current.ValueInt64() == 0 {
+		return current
+	}
+	return tfconv.Int64FromIntPtr(server)
 }
 
 // isUnknownList reports whether a nested-list model slice came in
@@ -835,7 +908,7 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	} else {
 		m.Health = types.StringNull()
 	}
-	m.ResourcePolicyID = tfconv.Int64FromIntPtr(res.ResourcePolicyID)
+	m.ResourcePolicyID = resourcePolicyIDFromServer(m.ResourcePolicyID, res.ResourcePolicyID)
 	m.DefaultResourcePolicyID = tfconv.Int64FromIntPtr(res.DefaultResourcePolicyID)
 
 	// Headers - round-trip the list. An absent/empty wire list keeps

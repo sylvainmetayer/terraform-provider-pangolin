@@ -2,6 +2,7 @@ package datasources
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -60,7 +61,8 @@ func (d *ResourcePolicyDataSource) Metadata(_ context.Context, req datasource.Me
 
 func (d *ResourcePolicyDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Looks up a single Pangolin resource policy (Enterprise) by ID. Secrets are never returned: " +
+		Description: "Looks up a single shared Pangolin resource policy (Enterprise) by ID; the inline default " +
+			"policy of a resource is refused. Secrets are never returned: " +
 			"`has_password`, `has_pincode` and `has_header_auth` only tell whether one is set. " +
 			"To browse the shared policies of the org, use `pangolin_resource_policies`.",
 		Attributes: map[string]schema.Attribute{
@@ -120,6 +122,16 @@ func (d *ResourcePolicyDataSource) Read(ctx context.Context, req datasource.Read
 		resp.Diagnostics.AddError("Failed to read resource policy", err.Error())
 		return
 	}
+	shared, err := d.client.IsSharedResourcePolicy(ctx, int(cfg.ID.ValueInt64()))
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read resource policy", err.Error())
+		return
+	}
+	if !shared {
+		resp.Diagnostics.AddError("Not a shared resource policy",
+			fmt.Sprintf("Resource policy %d is the inline default policy of a resource, not a shared policy.", cfg.ID.ValueInt64()))
+		return
+	}
 
 	state := resourcePolicyDataModel(policy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -172,17 +184,13 @@ func resourcePolicyDataModel(p *client.ResourcePolicy) ResourcePolicyDataSourceM
 		m.WhitelistEmails = append(m.WhitelistEmails, types.StringValue(entry.Email))
 	}
 	for _, rule := range rules {
-		enabled := true
-		if rule.Enabled != nil {
-			enabled = *rule.Enabled
-		}
 		m.Rules = append(m.Rules, ResourcePolicyRuleDataModel{
 			RuleID:   types.Int64Value(int64(rule.RuleID)),
 			Action:   types.StringValue(rule.Action),
 			Match:    types.StringValue(rule.Match),
 			Value:    types.StringValue(rule.Value),
 			Priority: types.Int64Value(int64(rule.Priority)),
-			Enabled:  types.BoolValue(enabled),
+			Enabled:  types.BoolValue(rule.IsEnabled()),
 		})
 	}
 	return m

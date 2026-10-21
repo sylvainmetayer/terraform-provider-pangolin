@@ -240,23 +240,30 @@ func (r *ResourcePolicyResource) ValidateConfig(ctx context.Context, req resourc
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// The server stores whitelist emails only while the whitelist is
-	// enabled, so a disabled whitelist with emails would never converge.
-	if cfg.WhitelistEmails.IsNull() || cfg.WhitelistEmails.IsUnknown() || len(cfg.WhitelistEmails.Elements()) == 0 {
-		return
+	resp.Diagnostics.Append(validateResourcePolicyWhitelist(cfg)...)
+}
+
+// validateResourcePolicyWhitelist rejects emails on a disabled whitelist:
+// the server stores them only while the whitelist is enabled, so the
+// plan would never converge. Unknown values pass; Create and Update run
+// it again on the plan, where they are known, before any write.
+func validateResourcePolicyWhitelist(m ResourcePolicyModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if m.WhitelistEmails.IsNull() || m.WhitelistEmails.IsUnknown() || len(m.WhitelistEmails.Elements()) == 0 {
+		return diags
 	}
-	if cfg.EmailWhitelistEnabled.IsUnknown() {
-		return
+	if m.EmailWhitelistEnabled.IsUnknown() || m.EmailWhitelistEnabled.ValueBool() {
+		return diags
 	}
-	if !cfg.EmailWhitelistEnabled.ValueBool() {
-		resp.Diagnostics.AddAttributeError(path.Root("whitelist_emails"), "Email whitelist disabled",
-			"`whitelist_emails` requires `email_whitelist_enabled = true`: Pangolin discards the emails of a disabled whitelist.")
-	}
+	diags.AddAttributeError(path.Root("whitelist_emails"), "Email whitelist disabled",
+		"`whitelist_emails` requires `email_whitelist_enabled = true`: Pangolin discards the emails of a disabled whitelist.")
+	return diags
 }
 
 func (r *ResourcePolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan ResourcePolicyModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(validateResourcePolicyWhitelist(plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -326,6 +333,7 @@ func (r *ResourcePolicyResource) Update(ctx context.Context, req resource.Update
 	var plan, prior ResourcePolicyModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	resp.Diagnostics.Append(validateResourcePolicyWhitelist(plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -406,7 +414,7 @@ func (r *ResourcePolicyResource) Delete(ctx context.Context, req resource.Delete
 		}
 		resp.Diagnostics.AddError("Failed to delete resource policy",
 			err.Error()+"\n\nPangolin refuses to delete a policy that is still attached to a resource: detach it first "+
-				"(remove `resource_policy_id` from the `pangolin_resource`).")
+				"(set `resource_policy_id = 0` on the `pangolin_resource`).")
 	}
 }
 
@@ -420,6 +428,19 @@ func (r *ResourcePolicyResource) ImportState(ctx context.Context, req resource.I
 	policy, err := r.client.GetResourcePolicy(ctx, int(id))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to import resource policy", err.Error())
+		return
+	}
+	// Managing a resource's inline default policy here would let a
+	// destroy delete it from under the live resource.
+	shared, err := r.client.IsSharedResourcePolicy(ctx, int(id))
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import resource policy", err.Error())
+		return
+	}
+	if !shared {
+		resp.Diagnostics.AddError("Not a shared resource policy",
+			fmt.Sprintf("Resource policy %d is the inline default policy of a resource, not a shared policy. "+
+				"Manage its settings through that `pangolin_resource` instead.", id))
 		return
 	}
 
@@ -533,16 +554,12 @@ func applyResourcePolicyResponse(ctx context.Context, m ResourcePolicyModel, p *
 func resourcePolicyRuleModels(rules []client.ResourcePolicyRule) []ResourcePolicyRuleModel {
 	out := make([]ResourcePolicyRuleModel, len(rules))
 	for i, rule := range rules {
-		enabled := true
-		if rule.Enabled != nil {
-			enabled = *rule.Enabled
-		}
 		out[i] = ResourcePolicyRuleModel{
 			Action:   types.StringValue(rule.Action),
 			Match:    types.StringValue(rule.Match),
 			Value:    types.StringValue(rule.Value),
 			Priority: types.Int64Value(int64(rule.Priority)),
-			Enabled:  types.BoolValue(enabled),
+			Enabled:  types.BoolValue(rule.IsEnabled()),
 		}
 	}
 	return out

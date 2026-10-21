@@ -322,3 +322,20 @@ func TestListResourcePolicies_CappedPageSizeWithoutTotal(t *testing.T) {
 		t.Errorf("got %d policies over pages %v, want 5 over 3", len(got), pages)
 	}
 }
+
+func TestIsSharedResourcePolicy(t *testing.T) {
+	// The list only holds shared policies; an inline default policy
+	// (GET still answers for it) is absent.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"policies":   []map[string]any{{"resourcePolicyId": 7, "name": "corp", "orgId": "test-org"}},
+			"pagination": map[string]any{"total": 1, "pageSize": resourcePolicyListPageSize, "page": 1},
+		})
+	})
+	for id, want := range map[int]bool{7: true, 12: false} {
+		got, err := c.IsSharedResourcePolicy(context.Background(), id)
+		if err != nil || got != want {
+			t.Errorf("IsSharedResourcePolicy(%d) = %v, %v; want %v", id, got, err, want)
+		}
+	}
+}

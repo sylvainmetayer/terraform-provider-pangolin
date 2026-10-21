@@ -28,6 +28,12 @@ type ResourcePolicyRule struct {
 	Enabled  *bool  `json:"enabled,omitempty"`
 }
 
+// IsEnabled reports whether the rule is enabled; the server's default
+// for a missing value is true.
+func (r ResourcePolicyRule) IsEnabled() bool {
+	return r.Enabled == nil || *r.Enabled
+}
+
 // ResourcePolicyRole is a role granted access by a policy. GET leaves
 // out the org admin role, which the server always keeps bound.
 type ResourcePolicyRole struct {
@@ -189,8 +195,7 @@ func (c *Client) SetResourcePolicyAccessControl(ctx context.Context, policyID in
 	if body.RoleIDs == nil {
 		body.RoleIDs = []int{}
 	}
-	req = &body
-	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/resource-policy/%d/access-control", policyID), req)
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/resource-policy/%d/access-control", policyID), &body)
 	return err
 }
 
@@ -305,4 +310,21 @@ func (c *Client) ListResourcePolicies(ctx context.Context, query string) ([]Reso
 			return all, nil
 		}
 	}
+}
+
+// IsSharedResourcePolicy reports whether policyID is a shared (global)
+// policy of the client's org. GET /resource-policy/{id} also answers for
+// the inline default policy of a resource without saying which kind it
+// is, so the list, which only holds shared policies, is the authority.
+func (c *Client) IsSharedResourcePolicy(ctx context.Context, policyID int) (bool, error) {
+	policies, err := c.ListResourcePolicies(ctx, "")
+	if err != nil {
+		return false, err
+	}
+	for _, p := range policies {
+		if p.ResourcePolicyID == policyID {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -6,7 +6,11 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
 
@@ -212,11 +216,15 @@ func TestResourcePolicyIDUpdate(t *testing.T) {
 		want        string // "" = key omitted
 	}{
 		{"unknown sends nothing", types.Int64Unknown(), types.Int64Value(5), ""},
-		{"null detaches", types.Int64Null(), types.Int64Value(5), "null"},
+		{"unset keeps the attachment", types.Int64Null(), types.Int64Value(5), ""},
 		{"never attached", types.Int64Null(), types.Int64Null(), ""},
 		{"unchanged", types.Int64Value(5), types.Int64Value(5), ""},
 		{"attach", types.Int64Value(5), types.Int64Null(), "5"},
 		{"switch", types.Int64Value(6), types.Int64Value(5), "6"},
+		{"0 detaches", types.Int64Value(0), types.Int64Value(5), "null"},
+		{"0 on a detached resource", types.Int64Value(0), types.Int64Null(), ""},
+		{"0 kept after detaching", types.Int64Value(0), types.Int64Value(0), ""},
+		{"attach after 0", types.Int64Value(5), types.Int64Value(0), "5"},
 	}
 	for _, tc := range cases {
 		got := resourcePolicyIDUpdate(tc.plan, tc.prior)
@@ -230,14 +238,49 @@ func TestResourcePolicyIDUpdate(t *testing.T) {
 }
 
 func TestApplyHTTPResourceResponse_ResourcePolicyID(t *testing.T) {
-	// The server value always wins: an attachment made elsewhere is
-	// surfaced, a detached resource reads back null.
+	// The server value wins, so an attachment made elsewhere is
+	// surfaced; only the configured detach value 0 survives a null.
 	m := applyHTTPResourceResponse(HTTPResourceModel{}, &client.Resource{ResourceID: 1, ResourcePolicyID: intPtr(8)})
 	if m.ResourcePolicyID.ValueInt64() != 8 {
 		t.Errorf("attached: ResourcePolicyID = %v, want 8", m.ResourcePolicyID)
 	}
 	m = applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(8)}, &client.Resource{ResourceID: 1})
 	if !m.ResourcePolicyID.IsNull() {
-		t.Errorf("detached: ResourcePolicyID = %v, want null", m.ResourcePolicyID)
+		t.Errorf("detached out of band: ResourcePolicyID = %v, want null", m.ResourcePolicyID)
+	}
+	m = applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(0)}, &client.Resource{ResourceID: 1})
+	if m.ResourcePolicyID.IsNull() || m.ResourcePolicyID.ValueInt64() != 0 {
+		t.Errorf("detached with 0: ResourcePolicyID = %v, want 0 kept so the refresh is clean", m.ResourcePolicyID)
+	}
+	m = applyHTTPResourceResponse(HTTPResourceModel{ResourcePolicyID: types.Int64Value(0)}, &client.Resource{ResourceID: 1, ResourcePolicyID: intPtr(3)})
+	if m.ResourcePolicyID.ValueInt64() != 3 {
+		t.Errorf("attached out of band after 0: ResourcePolicyID = %v, want 3", m.ResourcePolicyID)
+	}
+}
+
+func TestHTTPResourceSchema_ResourcePolicyIDUnsetKeepsState(t *testing.T) {
+	// Upgrade path: a state holding an attachment and a config that
+	// never set the attribute must plan no change.
+	schemaResp, _ := resourceSchema(t, &HTTPResource{})
+	attr, ok := schemaResp.Schema.Attributes["resource_policy_id"].(schema.Int64Attribute)
+	if !ok || !attr.Optional || !attr.Computed {
+		t.Fatalf("resource_policy_id must be Optional+Computed, got %+v", attr)
+	}
+	planned := types.Int64Unknown()
+	for _, m := range attr.PlanModifiers {
+		resp := &planmodifier.Int64Response{PlanValue: planned}
+		m.PlanModifyInt64(context.Background(), planmodifier.Int64Request{
+			ConfigValue: types.Int64Null(),
+			PlanValue:   planned,
+			StateValue:  types.Int64Value(5),
+			State:       tfsdk.State{Raw: tftypes.NewValue(tftypes.Object{}, map[string]tftypes.Value{})},
+		}, resp)
+		planned = resp.PlanValue
+	}
+	if planned.IsUnknown() || planned.ValueInt64() != 5 {
+		t.Fatalf("planned resource_policy_id = %v, want 5 from state", planned)
+	}
+	if got := resourcePolicyIDUpdate(planned, types.Int64Value(5)); got != nil {
+		t.Errorf("unset attribute sent %s, want no change", *got)
 	}
 }
