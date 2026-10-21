@@ -54,7 +54,7 @@ Read-Only:
 
 - `enabled` (Boolean) Whether the probe runs.
 - `follow_redirects` (Boolean) Whether redirects are followed.
-- `headers` (String) Probe headers as the raw JSON string sent by the server (decode with `jsondecode`).
+- `headers` (Attributes List) Probe request headers - list of `{name, value}` objects. (see [below for nested schema](#nestedatt--health_checks--headers))
 - `health` (String) `unknown`, `healthy` or `unhealthy`.
 - `healthy_threshold` (Number) Successes required to turn healthy.
 - `hostname` (String) Probed host.
@@ -78,3 +78,11 @@ Read-Only:
 - `tls_server_name` (String) TLS SNI.
 - `unhealthy_interval` (Number) Interval in seconds while unhealthy.
 - `unhealthy_threshold` (Number) Failures required to turn unhealthy.
+
+<a id="nestedatt--health_checks--headers"></a>
+### Nested Schema for `health_checks.headers`
+
+Read-Only:
+
+- `name` (String) Header name.
+- `value` (String) Header value.

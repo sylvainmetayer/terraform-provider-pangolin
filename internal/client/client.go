@@ -163,6 +163,21 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return lastResp, lastErr
 }
 
+// doRequestNoRetry is doRequest without the retry loop, for
+// non-idempotent calls sent with a method doRequest would retry
+// (e.g. a create exposed as PUT).
+func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
+	var bodyBytes []byte
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyBytes = b
+	}
+	return c.doRequestOnce(ctx, method, path, bodyBytes)
+}
+
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
 func (c *Client) doRequestOnce(ctx context.Context, method, path string, bodyBytes []byte) (*APIResponse, error) {
 	url := fmt.Sprintf("%s/v1%s", c.BaseURL, path)
@@ -707,22 +722,33 @@ func (t *Target) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
+	raw, err := hcHeadersRawString(aux.HCHeaders)
+	if err != nil {
+		return err
+	}
+	t.HCHeadersRaw = raw
+	return nil
+}
+
+// hcHeadersRawString folds both wire forms of an hcHeaders column
+// (JSON-encoded string or native array) into the string form read by
+// [ParseTargetHCHeaders]. Absent and null map to nil.
+func hcHeadersRawString(msg json.RawMessage) (*string, error) {
 	switch {
-	case len(aux.HCHeaders) == 0, string(aux.HCHeaders) == "null":
-		t.HCHeadersRaw = nil
-	case aux.HCHeaders[0] == '"':
+	case len(msg) == 0, string(msg) == "null":
+		return nil, nil
+	case msg[0] == '"':
 		// JSON-encoded string form - decode the outer string layer
 		var s string
-		if err := json.Unmarshal(aux.HCHeaders, &s); err != nil {
-			return fmt.Errorf("decode hcHeaders string: %w", err)
+		if err := json.Unmarshal(msg, &s); err != nil {
+			return nil, fmt.Errorf("decode hcHeaders string: %w", err)
 		}
-		t.HCHeadersRaw = &s
+		return &s, nil
 	default:
 		// Native array (or any other JSON value) - keep verbatim
-		s := string(aux.HCHeaders)
-		t.HCHeadersRaw = &s
+		s := string(msg)
+		return &s, nil
 	}
-	return nil
 }
 
 // ListResourceTargets lists all targets that back a resource, with
@@ -931,8 +957,9 @@ func (c *Client) DeleteTarget(ctx context.Context, targetID int) error {
 //
 // Wire quirk: unlike targets, hcHeaders is a JSON-encoded string on
 // both the request and the response bodies (e.g.
-// `"[{\"name\":\"X-Probe\",\"value\":\"yes\"}]"`). Decode it with
-// [ParseTargetHCHeaders].
+// `"[{\"name\":\"X-Probe\",\"value\":\"yes\"}]"`). A native array is
+// accepted too and folded into the same string form (see
+// [HealthCheck.UnmarshalJSON]). Decode it with [ParseTargetHCHeaders].
 type HealthCheck struct {
 	HealthCheckID        int     `json:"targetHealthCheckId"`
 	Name                 string  `json:"name"`
@@ -959,6 +986,25 @@ type HealthCheck struct {
 	ResourceID           *int    `json:"resourceId"`
 	ResourceName         *string `json:"resourceName"`
 	ResourceNiceID       *string `json:"resourceNiceId"`
+}
+
+// UnmarshalJSON accepts hcHeaders as a JSON-encoded string or as a
+// native array, like [Target.UnmarshalJSON].
+func (h *HealthCheck) UnmarshalJSON(data []byte) error {
+	type healthCheckAlias HealthCheck
+	aux := &struct {
+		HCHeaders json.RawMessage `json:"hcHeaders"`
+		*healthCheckAlias
+	}{healthCheckAlias: (*healthCheckAlias)(h)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	raw, err := hcHeadersRawString(aux.HCHeaders)
+	if err != nil {
+		return err
+	}
+	h.HCHeaders = raw
+	return nil
 }
 
 // HealthCheckRequest is the body of both PUT /org/{org}/health-check
@@ -1068,12 +1114,23 @@ func (c *Client) ListHealthChecks(ctx context.Context, opts *ListHealthChecksOpt
 	}
 }
 
+// ErrHealthChecksUnavailable is returned by [Client.GetHealthCheck]
+// when the health-check list route itself answers 404 (OSS build, or
+// an org the key cannot see). It does not wrap [ErrNotFound], so a
+// caller removing the resource on ErrNotFound only does so when the
+// list succeeded and the row is gone.
+var ErrHealthChecksUnavailable = errors.New("pangolin: health check routes unavailable")
+
 // GetHealthCheck looks a health check up by ID. There is no per-id
 // GET route, so this walks [Client.ListHealthChecks] and returns
-// [ErrNotFound] when no row matches.
+// [ErrNotFound] when no row matches, or [ErrHealthChecksUnavailable]
+// when the list route answers 404.
 func (c *Client) GetHealthCheck(ctx context.Context, healthCheckID int) (*HealthCheck, error) {
 	checks, err := c.ListHealthChecks(ctx, nil)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("list health checks: %s: %w", err.Error(), ErrHealthChecksUnavailable)
+		}
 		return nil, err
 	}
 	for i := range checks {
@@ -1087,8 +1144,12 @@ func (c *Client) GetHealthCheck(ctx context.Context, healthCheckID int) (*Health
 // CreateHealthCheck creates a standalone health check and returns its
 // ID. The create response carries only `targetHealthCheckId`; read
 // the full row back with [Client.GetHealthCheck].
+//
+// The create is a PUT, which doRequest would retry on 5xx and
+// transport errors: a create committed server-side whose response is
+// lost would then insert a second probe. It is sent once instead.
 func (c *Client) CreateHealthCheck(ctx context.Context, req *HealthCheckRequest) (int, error) {
-	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/health-check", c.OrgID), req)
+	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/health-check", c.OrgID), req)
 	if err != nil {
 		return 0, err
 	}

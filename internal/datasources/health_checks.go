@@ -20,35 +20,36 @@ type HealthChecksDataSource struct {
 	client *client.Client
 }
 
-// HealthCheckItemModel mirrors [client.HealthCheck]. hc_headers keeps
-// the raw JSON string emitted by the server.
+// HealthCheckItemModel mirrors [client.HealthCheck]. headers is
+// decoded into the same typed `{name, value}` list as
+// pangolin_resource_targets.
 type HealthCheckItemModel struct {
-	ID                 types.Int64  `tfsdk:"id"`
-	Name               types.String `tfsdk:"name"`
-	Standalone         types.Bool   `tfsdk:"standalone"`
-	SiteID             types.Int64  `tfsdk:"site_id"`
-	SiteName           types.String `tfsdk:"site_name"`
-	SiteNiceID         types.String `tfsdk:"site_nice_id"`
-	ResourceID         types.Int64  `tfsdk:"resource_id"`
-	ResourceName       types.String `tfsdk:"resource_name"`
-	ResourceNiceID     types.String `tfsdk:"resource_nice_id"`
-	Enabled            types.Bool   `tfsdk:"enabled"`
-	Health             types.String `tfsdk:"health"`
-	Mode               types.String `tfsdk:"mode"`
-	Hostname           types.String `tfsdk:"hostname"`
-	Port               types.Int64  `tfsdk:"port"`
-	Path               types.String `tfsdk:"path"`
-	Scheme             types.String `tfsdk:"scheme"`
-	Method             types.String `tfsdk:"method"`
-	Interval           types.Int64  `tfsdk:"interval"`
-	UnhealthyInterval  types.Int64  `tfsdk:"unhealthy_interval"`
-	Timeout            types.Int64  `tfsdk:"timeout"`
-	Headers            types.String `tfsdk:"headers"`
-	FollowRedirects    types.Bool   `tfsdk:"follow_redirects"`
-	Status             types.Int64  `tfsdk:"status"`
-	TLSServerName      types.String `tfsdk:"tls_server_name"`
-	HealthyThreshold   types.Int64  `tfsdk:"healthy_threshold"`
-	UnhealthyThreshold types.Int64  `tfsdk:"unhealthy_threshold"`
+	ID                 types.Int64         `tfsdk:"id"`
+	Name               types.String        `tfsdk:"name"`
+	Standalone         types.Bool          `tfsdk:"standalone"`
+	SiteID             types.Int64         `tfsdk:"site_id"`
+	SiteName           types.String        `tfsdk:"site_name"`
+	SiteNiceID         types.String        `tfsdk:"site_nice_id"`
+	ResourceID         types.Int64         `tfsdk:"resource_id"`
+	ResourceName       types.String        `tfsdk:"resource_name"`
+	ResourceNiceID     types.String        `tfsdk:"resource_nice_id"`
+	Enabled            types.Bool          `tfsdk:"enabled"`
+	Health             types.String        `tfsdk:"health"`
+	Mode               types.String        `tfsdk:"mode"`
+	Hostname           types.String        `tfsdk:"hostname"`
+	Port               types.Int64         `tfsdk:"port"`
+	Path               types.String        `tfsdk:"path"`
+	Scheme             types.String        `tfsdk:"scheme"`
+	Method             types.String        `tfsdk:"method"`
+	Interval           types.Int64         `tfsdk:"interval"`
+	UnhealthyInterval  types.Int64         `tfsdk:"unhealthy_interval"`
+	Timeout            types.Int64         `tfsdk:"timeout"`
+	Headers            []HCHeaderItemModel `tfsdk:"headers"`
+	FollowRedirects    types.Bool          `tfsdk:"follow_redirects"`
+	Status             types.Int64         `tfsdk:"status"`
+	TLSServerName      types.String        `tfsdk:"tls_server_name"`
+	HealthyThreshold   types.Int64         `tfsdk:"healthy_threshold"`
+	UnhealthyThreshold types.Int64         `tfsdk:"unhealthy_threshold"`
 }
 
 // HealthChecksDataSourceModel is the top-level data source shape.
@@ -114,27 +115,36 @@ func (d *HealthChecksDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 				Computed:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
-						"id":                  schema.Int64Attribute{Description: "Numeric health check ID.", Computed: true},
-						"name":                schema.StringAttribute{Description: "Display name.", Computed: true},
-						"standalone":          schema.BoolAttribute{Description: "`false` for a probe attached to a target.", Computed: true},
-						"site_id":             schema.Int64Attribute{Description: "ID of the site running the probe.", Computed: true},
-						"site_name":           schema.StringAttribute{Description: "Name of the site running the probe.", Computed: true},
-						"site_nice_id":        schema.StringAttribute{Description: "Nice ID of the site running the probe.", Computed: true},
-						"resource_id":         schema.Int64Attribute{Description: "Resource of the target the probe is attached to (null when standalone).", Computed: true},
-						"resource_name":       schema.StringAttribute{Description: "Name of that resource.", Computed: true},
-						"resource_nice_id":    schema.StringAttribute{Description: "Nice ID of that resource.", Computed: true},
-						"enabled":             schema.BoolAttribute{Description: "Whether the probe runs.", Computed: true},
-						"health":              schema.StringAttribute{Description: "`unknown`, `healthy` or `unhealthy`.", Computed: true},
-						"mode":                schema.StringAttribute{Description: "Probe mode.", Computed: true},
-						"hostname":            schema.StringAttribute{Description: "Probed host.", Computed: true},
-						"port":                schema.Int64Attribute{Description: "Probed port.", Computed: true},
-						"path":                schema.StringAttribute{Description: "Probed URL path.", Computed: true},
-						"scheme":              schema.StringAttribute{Description: "Probe scheme.", Computed: true},
-						"method":              schema.StringAttribute{Description: "Probe HTTP method.", Computed: true},
-						"interval":            schema.Int64Attribute{Description: "Interval in seconds while healthy.", Computed: true},
-						"unhealthy_interval":  schema.Int64Attribute{Description: "Interval in seconds while unhealthy.", Computed: true},
-						"timeout":             schema.Int64Attribute{Description: "Timeout in seconds.", Computed: true},
-						"headers":             schema.StringAttribute{Description: "Probe headers as the raw JSON string sent by the server (decode with `jsondecode`).", Computed: true},
+						"id":                 schema.Int64Attribute{Description: "Numeric health check ID.", Computed: true},
+						"name":               schema.StringAttribute{Description: "Display name.", Computed: true},
+						"standalone":         schema.BoolAttribute{Description: "`false` for a probe attached to a target.", Computed: true},
+						"site_id":            schema.Int64Attribute{Description: "ID of the site running the probe.", Computed: true},
+						"site_name":          schema.StringAttribute{Description: "Name of the site running the probe.", Computed: true},
+						"site_nice_id":       schema.StringAttribute{Description: "Nice ID of the site running the probe.", Computed: true},
+						"resource_id":        schema.Int64Attribute{Description: "Resource of the target the probe is attached to (null when standalone).", Computed: true},
+						"resource_name":      schema.StringAttribute{Description: "Name of that resource.", Computed: true},
+						"resource_nice_id":   schema.StringAttribute{Description: "Nice ID of that resource.", Computed: true},
+						"enabled":            schema.BoolAttribute{Description: "Whether the probe runs.", Computed: true},
+						"health":             schema.StringAttribute{Description: "`unknown`, `healthy` or `unhealthy`.", Computed: true},
+						"mode":               schema.StringAttribute{Description: "Probe mode.", Computed: true},
+						"hostname":           schema.StringAttribute{Description: "Probed host.", Computed: true},
+						"port":               schema.Int64Attribute{Description: "Probed port.", Computed: true},
+						"path":               schema.StringAttribute{Description: "Probed URL path.", Computed: true},
+						"scheme":             schema.StringAttribute{Description: "Probe scheme.", Computed: true},
+						"method":             schema.StringAttribute{Description: "Probe HTTP method.", Computed: true},
+						"interval":           schema.Int64Attribute{Description: "Interval in seconds while healthy.", Computed: true},
+						"unhealthy_interval": schema.Int64Attribute{Description: "Interval in seconds while unhealthy.", Computed: true},
+						"timeout":            schema.Int64Attribute{Description: "Timeout in seconds.", Computed: true},
+						"headers": schema.ListNestedAttribute{
+							Description: "Probe request headers - list of `{name, value}` objects.",
+							Computed:    true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"name":  schema.StringAttribute{Description: "Header name.", Computed: true},
+									"value": schema.StringAttribute{Description: "Header value.", Computed: true},
+								},
+							},
+						},
 						"follow_redirects":    schema.BoolAttribute{Description: "Whether redirects are followed.", Computed: true},
 						"status":              schema.Int64Attribute{Description: "Expected HTTP status code.", Computed: true},
 						"tls_server_name":     schema.StringAttribute{Description: "TLS SNI.", Computed: true},
@@ -191,7 +201,13 @@ func (d *HealthChecksDataSource) Read(ctx context.Context, req datasource.ReadRe
 	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
 }
 
+// healthCheckItemFromAPI maps one row. An empty hcHealth reads as
+// `unknown`, like on pangolin_health_check.
 func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
+	health := hc.HCHealth
+	if health == "" {
+		health = "unknown"
+	}
 	return HealthCheckItemModel{
 		ID:                 types.Int64Value(int64(hc.HealthCheckID)),
 		Name:               types.StringValue(hc.Name),
@@ -203,7 +219,7 @@ func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
 		ResourceName:       tfconv.StringFromPtr(hc.ResourceName),
 		ResourceNiceID:     tfconv.StringFromPtr(hc.ResourceNiceID),
 		Enabled:            types.BoolValue(hc.HCEnabled),
-		Health:             types.StringValue(hc.HCHealth),
+		Health:             types.StringValue(health),
 		Mode:               tfconv.StringFromPtr(hc.HCMode),
 		Hostname:           tfconv.StringFromPtr(hc.HCHostname),
 		Port:               tfconv.Int64FromIntPtr(hc.HCPort),
@@ -213,7 +229,7 @@ func healthCheckItemFromAPI(hc *client.HealthCheck) HealthCheckItemModel {
 		Interval:           tfconv.Int64FromIntPtr(hc.HCInterval),
 		UnhealthyInterval:  tfconv.Int64FromIntPtr(hc.HCUnhealthyInterval),
 		Timeout:            tfconv.Int64FromIntPtr(hc.HCTimeout),
-		Headers:            tfconv.StringFromPtr(hc.HCHeaders),
+		Headers:            decodeTargetHCHeaders(hc.HCHeaders),
 		FollowRedirects:    tfconv.BoolFromPtr(hc.HCFollowRedirects),
 		Status:             tfconv.Int64FromIntPtr(hc.HCStatus),
 		TLSServerName:      tfconv.StringFromPtr(hc.HCTLSServerName),

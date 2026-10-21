@@ -75,7 +75,7 @@ resource "pangolin_health_check" "postgres" {
 - `hostname` (String) Host the probe connects to. Required when `enabled = true`.
 - `interval` (Number) Probe interval in seconds while the check is healthy. Defaults to `30`.
 - `method` (String) HTTP method used by an `http` probe (e.g. `GET`, `HEAD`). Defaults to `GET`.
-- `mode` (String) Probe mode: `http` or `tcp`. Defaults to `http`.
+- `mode` (String) Probe mode: `http` or `tcp`. Defaults to `http`. The API also stores `snmp` and `ping`, but Pangolin 1.24 does not implement them (the UI hides them and Newt runs any non-`tcp` probe as `http`), so they are not accepted here.
 - `path` (String) URL path requested by an `http` probe (e.g. `/health`).
 - `port` (Number) Port the probe connects to.
 - `scheme` (String) Scheme used by an `http` probe (`http` or `https`).

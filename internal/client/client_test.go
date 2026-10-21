@@ -1546,6 +1546,61 @@ func TestListHealthChecks_OSSAnswers404(t *testing.T) {
 	}
 }
 
+func TestGetHealthCheck_ListRoute404IsNotRowMissing(t *testing.T) {
+	disableRetryBackoff(t)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	_, err := c.GetHealthCheck(context.Background(), 5)
+	if !errors.Is(err, ErrHealthChecksUnavailable) {
+		t.Errorf("err = %v, want ErrHealthChecksUnavailable", err)
+	}
+	// Must not read as "row gone", or Read would drop the state.
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v must not wrap ErrNotFound", err)
+	}
+}
+
+func TestHealthCheck_DecodesNativeArrayHeaders(t *testing.T) {
+	var hc HealthCheck
+	raw := `{"targetHealthCheckId":5,"name":"a","hcHeaders":[{"name":"X","value":"y"}]}`
+	if err := json.Unmarshal([]byte(raw), &hc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, err := ParseTargetHCHeaders(hc.HCHeaders)
+	if err != nil || len(got) != 1 || got[0].Name != "X" || got[0].Value != "y" {
+		t.Errorf("headers = %+v err=%v", got, err)
+	}
+
+	hc = HealthCheck{}
+	raw = `{"targetHealthCheckId":5,"name":"a","hcHeaders":"[{\"name\":\"X\",\"value\":\"y\"}]"}`
+	if err := json.Unmarshal([]byte(raw), &hc); err != nil {
+		t.Fatalf("unmarshal string form: %v", err)
+	}
+	if got, err := ParseTargetHCHeaders(hc.HCHeaders); err != nil || len(got) != 1 {
+		t.Errorf("string form headers = %+v err=%v", got, err)
+	}
+	if hc.HealthCheckID != 5 || hc.Name != "a" {
+		t.Errorf("other fields lost: %+v", hc)
+	}
+}
+
+func TestCreateHealthCheck_NotRetriedOn5xx(t *testing.T) {
+	disableRetryBackoff(t)
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeEnvelope(t, w, http.StatusBadGateway, nil)
+	})
+	name, site := "db", 4
+	if _, err := c.CreateHealthCheck(context.Background(), &HealthCheckRequest{Name: &name, SiteID: &site}); !errors.Is(err, ErrServer) {
+		t.Errorf("err = %v, want ErrServer", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (a retried create could insert a second probe)", calls)
+	}
+}
+
 func TestCreateHealthCheck_BodyAndID(t *testing.T) {
 	var gotBody map[string]json.RawMessage
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

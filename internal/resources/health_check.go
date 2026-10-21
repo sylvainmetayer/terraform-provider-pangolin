@@ -27,6 +27,7 @@ var (
 	_ resource.Resource                   = &HealthCheckResource{}
 	_ resource.ResourceWithImportState    = &HealthCheckResource{}
 	_ resource.ResourceWithValidateConfig = &HealthCheckResource{}
+	_ resource.ResourceWithModifyPlan     = &HealthCheckResource{}
 )
 
 // HealthCheckResource manages a standalone (target-less) health check.
@@ -114,10 +115,12 @@ func (r *HealthCheckResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Default:     booldefault.StaticBool(false),
 			},
 			"mode": schema.StringAttribute{
-				Description: "Probe mode: `http` or `tcp`. Defaults to `http`.",
-				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString("http"),
+				Description: "Probe mode: `http` or `tcp`. Defaults to `http`. The API also stores " +
+					"`snmp` and `ping`, but Pangolin 1.24 does not implement them (the UI hides them and " +
+					"Newt runs any non-`tcp` probe as `http`), so they are not accepted here.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("http"),
 				Validators: []validator.String{
 					stringvalidator.OneOf("http", "tcp"),
 				},
@@ -264,8 +267,11 @@ func (r *HealthCheckResource) Configure(_ context.Context, req resource.Configur
 }
 
 // ValidateConfig mirrors the server rule (`hostname` is required when
-// the probe is enabled) and warns about the configurations Newt
-// silently skips.
+// the probe is enabled) and warns about an `http` probe without path,
+// which Newt silently skips. An unknown `enabled` is skipped here:
+// Terraform validates the config again once it is known, before the
+// final plan of the apply. The missing-port warning lives in
+// ModifyPlan, which can see the port kept from state.
 func (r *HealthCheckResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var cfg HealthCheckResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
@@ -279,14 +285,41 @@ func (r *HealthCheckResource) ValidateConfig(ctx context.Context, req resource.V
 		resp.Diagnostics.AddAttributeError(path.Root("hostname"), "Missing hostname",
 			"`hostname` is required when `enabled = true`.")
 	}
-	if cfg.Port.IsNull() {
-		resp.Diagnostics.AddAttributeWarning(path.Root("port"), "Probe will not run",
-			"Newt skips a health check that has no `port`.")
-	}
 	mode := cfg.Mode.ValueString()
 	if !cfg.Mode.IsUnknown() && mode != "tcp" && cfg.Path.IsNull() {
 		resp.Diagnostics.AddAttributeWarning(path.Root("path"), "Probe will not run",
 			"Newt skips an `http` health check that has no `path`.")
+	}
+}
+
+// ModifyPlan warns when an enabled probe will end up with no port,
+// which Newt skips. The planned port already carries the value kept
+// from state (the API cannot clear it), so a port removed from the
+// config but still stored on the server does not warn.
+func (r *HealthCheckResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan HealthCheckResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !plan.Enabled.ValueBool() {
+		return
+	}
+	noPort := plan.Port.IsNull()
+	if plan.Port.IsUnknown() {
+		// Still unknown after UseStateForUnknown: either the config
+		// sets it from an unknown value (not a miss), or it is unset
+		// and no port is stored.
+		var cfgPort types.Int64
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("port"), &cfgPort)...)
+		noPort = cfgPort.IsNull()
+	}
+	if noPort {
+		resp.Diagnostics.AddAttributeWarning(path.Root("port"), "Probe will not run",
+			"Newt skips a health check that has no `port`.")
 	}
 }
 
@@ -314,6 +347,11 @@ func (r *HealthCheckResource) Create(ctx context.Context, req resource.CreateReq
 		// server-side row; the resource is marked tainted.
 		plan.ID = types.Int64Value(int64(id))
 		plan.Health = types.StringValue("unknown")
+		// port is the only attribute that can still be unknown here
+		// (Optional+Computed, unset on create); state must be known.
+		if plan.Port.IsUnknown() {
+			plan.Port = types.Int64Null()
+		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		resp.Diagnostics.AddError("Failed to read health check after create", err.Error())
 		return
@@ -332,11 +370,14 @@ func (r *HealthCheckResource) Read(ctx context.Context, req resource.ReadRequest
 
 	hc, err := r.client.GetHealthCheck(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
+		// ErrNotFound only means "the list succeeded and the row is
+		// gone"; a 404 on the list route itself (OSS build, wrong org)
+		// is ErrHealthChecksUnavailable and must not drop the state.
 		if errors.Is(err, client.ErrNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Failed to read health check", err.Error())
+		resp.Diagnostics.AddError("Failed to read health check", healthCheckErrorDetail(err))
 		return
 	}
 
@@ -397,6 +438,12 @@ func (r *HealthCheckResource) ImportState(ctx context.Context, req resource.Impo
 				"`hc_*` attributes of `pangolin_target` instead.", id, *hc.ResourceID))
 		return
 	}
+	if mode := tfconv.StringFromPtr(hc.HCMode).ValueString(); mode != "http" && mode != "tcp" {
+		resp.Diagnostics.AddError("Unsupported health check mode",
+			fmt.Sprintf("Health check %d uses mode %q. Pangolin 1.24 does not implement it (Newt runs it as "+
+				"`http`), so this provider only manages `http` and `tcp` probes.", id, mode))
+		return
+	}
 
 	state := healthCheckToModel(hc, HealthCheckResourceModel{})
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -405,6 +452,10 @@ func (r *HealthCheckResource) ImportState(ctx context.Context, req resource.Impo
 // healthCheckErrorDetail adds an Enterprise hint to 404s: the OSS
 // build has no health-check routes at all.
 func healthCheckErrorDetail(err error) string {
+	if errors.Is(err, client.ErrHealthChecksUnavailable) {
+		return err.Error() + ". Standalone health checks require Pangolin Enterprise Edition; " +
+			"also check the provider organization."
+	}
 	if errors.Is(err, client.ErrNotFound) {
 		return err.Error() + ". Standalone health checks require Pangolin Enterprise Edition; " +
 			"also check that the health check exists in the provider organization."

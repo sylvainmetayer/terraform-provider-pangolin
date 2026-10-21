@@ -286,10 +286,17 @@ func TestHealthCheckValidateConfig(t *testing.T) {
 		t.Errorf("missing hostname: diags = %v", resp.Diagnostics)
 	}
 
-	// Enabled http probe without port and path: two warnings.
+	// Enabled http probe without path: one warning (the port warning
+	// lives in ModifyPlan).
 	resp = validateHealthCheck(t, map[string]tftypes.Value{"enabled": enabled, "hostname": str("db")})
-	if resp.Diagnostics.HasError() || resp.Diagnostics.WarningsCount() != 2 {
-		t.Errorf("http without port/path: diags = %v", resp.Diagnostics)
+	if resp.Diagnostics.HasError() || resp.Diagnostics.WarningsCount() != 1 {
+		t.Errorf("http without path: diags = %v", resp.Diagnostics)
+	}
+
+	// Unknown enabled: skipped, Terraform validates again once known.
+	resp = validateHealthCheck(t, map[string]tftypes.Value{"enabled": tftypes.NewValue(tftypes.Bool, tftypes.UnknownValue)})
+	if resp.Diagnostics.HasError() || resp.Diagnostics.WarningsCount() != 0 {
+		t.Errorf("unknown enabled: diags = %v", resp.Diagnostics)
 	}
 
 	// Enabled tcp probe with port: path is not needed.
@@ -298,5 +305,64 @@ func TestHealthCheckValidateConfig(t *testing.T) {
 	})
 	if resp.Diagnostics.HasError() || resp.Diagnostics.WarningsCount() != 0 {
 		t.Errorf("tcp: diags = %v", resp.Diagnostics)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// ModifyPlan (missing-port warning)
+// -----------------------------------------------------------------------------
+
+func modifyHealthCheckPlan(t *testing.T, cfg, plan map[string]tftypes.Value, state map[string]tftypes.Value) resource.ModifyPlanResponse {
+	t.Helper()
+	c := healthCheckConfig(t, cfg)
+	p := healthCheckConfig(t, plan)
+	req := resource.ModifyPlanRequest{
+		Config: c,
+		Plan:   tfsdk.Plan(p),
+		State:  tfsdk.State{Schema: p.Schema, Raw: tftypes.NewValue(p.Raw.Type(), nil)},
+	}
+	if state != nil {
+		st := healthCheckConfig(t, state)
+		req.State = tfsdk.State(st)
+	}
+	resp := resource.ModifyPlanResponse{Plan: req.Plan}
+	(&HealthCheckResource{}).ModifyPlan(context.Background(), req, &resp)
+	return resp
+}
+
+func TestHealthCheckModifyPlan_PortWarning(t *testing.T) {
+	enabled := tftypes.NewValue(tftypes.Bool, true)
+	unknownPort := tftypes.NewValue(tftypes.Number, tftypes.UnknownValue)
+	num := func(n int64) tftypes.Value { return tftypes.NewValue(tftypes.Number, n) }
+
+	// Create, port unset (planned unknown): warns.
+	resp := modifyHealthCheckPlan(t,
+		map[string]tftypes.Value{"enabled": enabled},
+		map[string]tftypes.Value{"enabled": enabled, "port": unknownPort}, nil)
+	if resp.Diagnostics.WarningsCount() != 1 {
+		t.Errorf("create without port: diags = %v", resp.Diagnostics)
+	}
+
+	// Create, port set from an unknown value: no warning.
+	resp = modifyHealthCheckPlan(t,
+		map[string]tftypes.Value{"enabled": enabled, "port": unknownPort},
+		map[string]tftypes.Value{"enabled": enabled, "port": unknownPort}, nil)
+	if resp.Diagnostics.WarningsCount() != 0 {
+		t.Errorf("unknown configured port: diags = %v", resp.Diagnostics)
+	}
+
+	// Update, port removed from config but kept from state: no warning.
+	resp = modifyHealthCheckPlan(t,
+		map[string]tftypes.Value{"enabled": enabled},
+		map[string]tftypes.Value{"enabled": enabled, "port": num(80)},
+		map[string]tftypes.Value{"enabled": enabled, "port": num(80)})
+	if resp.Diagnostics.WarningsCount() != 0 {
+		t.Errorf("port kept from state: diags = %v", resp.Diagnostics)
+	}
+
+	// Disabled probe: never warns.
+	resp = modifyHealthCheckPlan(t, nil, map[string]tftypes.Value{"port": unknownPort}, nil)
+	if resp.Diagnostics.WarningsCount() != 0 {
+		t.Errorf("disabled: diags = %v", resp.Diagnostics)
 	}
 }
