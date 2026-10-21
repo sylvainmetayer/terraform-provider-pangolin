@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -135,13 +136,7 @@ func (r *ResourceRuleResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	rule, err := r.client.CreateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), &client.SetResourceRuleRequest{
-		Action:   plan.Action.ValueString(),
-		Match:    plan.Match.ValueString(),
-		Value:    plan.Value.ValueString(),
-		Priority: int(plan.Priority.ValueInt64()),
-		Enabled:  plan.Enabled.ValueBool(),
-	})
+	rule, err := r.client.CreateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), resourceRuleRequestFromModel(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create resource rule", err.Error())
 		return
@@ -181,13 +176,7 @@ func (r *ResourceRuleResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	rule, err := r.client.UpdateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), int(plan.ID.ValueInt64()), &client.SetResourceRuleRequest{
-		Action:   plan.Action.ValueString(),
-		Match:    plan.Match.ValueString(),
-		Value:    plan.Value.ValueString(),
-		Priority: int(plan.Priority.ValueInt64()),
-		Enabled:  plan.Enabled.ValueBool(),
-	})
+	rule, err := r.client.UpdateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), int(plan.ID.ValueInt64()), resourceRuleRequestFromModel(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update resource rule", err.Error())
 		return
@@ -212,41 +201,48 @@ func (r *ResourceRuleResource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 }
 
+// ImportState only records the two IDs from the "{resource_id}/{rule_id}"
+// address; the framework's follow-up Read fills the rest, and a rule that
+// does not exist surfaces there as "Cannot import non-existent remote
+// object". resource_id must come from the address: the rules list does not
+// carry it (see client.ResourceRule).
 func (r *ResourceRuleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import format: "{resource_id}/{rule_id}"
-	idx := strings.Index(req.ID, "/")
-	if idx < 0 {
-		resp.Diagnostics.AddError("Invalid import ID", fmt.Sprintf("Expected format: {resource_id}/{rule_id}, got: %q", req.ID))
-		return
-	}
-
-	resourceIDStr := req.ID[:idx]
-	ruleIDStr := req.ID[idx+1:]
-
-	resourceID, err := strconv.ParseInt(resourceIDStr, 10, 64)
+	resourceID, ruleID, err := parseResourceRuleImportID(req.ID)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid resource ID", fmt.Sprintf("Cannot parse %q as integer", resourceIDStr))
+		resp.Diagnostics.AddError("Invalid import ID", err.Error())
 		return
 	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), ruleID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("resource_id"), resourceID)...)
+}
 
-	ruleID, err := strconv.ParseInt(ruleIDStr, 10, 64)
+// parseResourceRuleImportID splits a "{resource_id}/{rule_id}" import ID.
+func parseResourceRuleImportID(id string) (resourceID, ruleID int64, err error) {
+	resourceIDStr, ruleIDStr, ok := strings.Cut(id, "/")
+	if !ok {
+		return 0, 0, fmt.Errorf("expected format {resource_id}/{rule_id}, got: %q", id)
+	}
+	resourceID, err = strconv.ParseInt(resourceIDStr, 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid rule ID", fmt.Sprintf("Cannot parse %q as integer", ruleIDStr))
-		return
+		return 0, 0, fmt.Errorf("cannot parse resource ID %q as integer", resourceIDStr)
 	}
-
-	rule, err := r.client.GetResourceRule(ctx, int(resourceID), int(ruleID))
+	ruleID, err = strconv.ParseInt(ruleIDStr, 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to import resource rule", err.Error())
-		return
+		return 0, 0, fmt.Errorf("cannot parse rule ID %q as integer", ruleIDStr)
 	}
+	return resourceID, ruleID, nil
+}
 
-	// resource_id comes from the import address, never from the wire: the
-	// rules list does not always carry resourceId (see GetResourceRule), and
-	// a 0 here made the follow-up Read query /resource/0/rules, find nothing
-	// and drop the resource ("Cannot import non-existent remote object").
-	m := applyResourceRuleResponse(ResourceRuleModel{ResourceID: types.Int64Value(resourceID)}, rule)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+// resourceRuleRequestFromModel builds the create/update payload. Every
+// field is Required (enabled has a default), so the payload is complete.
+func resourceRuleRequestFromModel(m ResourceRuleModel) *client.SetResourceRuleRequest {
+	return &client.SetResourceRuleRequest{
+		Action:   m.Action.ValueString(),
+		Match:    m.Match.ValueString(),
+		Value:    m.Value.ValueString(),
+		Priority: int(m.Priority.ValueInt64()),
+		Enabled:  m.Enabled.ValueBool(),
+	}
 }
 
 // applyResourceRuleResponse copies the server's view of a rule onto m.

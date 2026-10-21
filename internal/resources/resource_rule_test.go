@@ -3,30 +3,22 @@ package resources
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
 
-// buildSetRuleRequestFromPlan mirrors the Create/Update inline mapping.
-func buildSetRuleRequestFromPlan(plan ResourceRuleModel) *client.SetResourceRuleRequest {
-	return &client.SetResourceRuleRequest{
-		Action:   plan.Action.ValueString(),
-		Match:    plan.Match.ValueString(),
-		Value:    plan.Value.ValueString(),
-		Priority: int(plan.Priority.ValueInt64()),
-		Enabled:  plan.Enabled.ValueBool(),
-	}
-}
-
 func TestResourceRule_WireToState(t *testing.T) {
-	// Real list payload: no resourceId on the rule (null on 1.24 inline
-	// policies), so resource_id must survive from the prior state.
+	// Real list payload: resourceId is null on 1.24 inline policies, so
+	// resource_id must survive from the prior state.
 	var rule client.ResourceRule
 	raw := `{"ruleId":9,"resourceId":null,"action":"ACCEPT","match":"CIDR","value":"10.0.0.0/8","priority":50,"enabled":true}`
 	if err := json.Unmarshal([]byte(raw), &rule); err != nil {
@@ -55,12 +47,7 @@ func TestResourceRule_StateToRequest(t *testing.T) {
 		Priority: types.Int64Value(1),
 		Enabled:  types.BoolValue(false),
 	}
-	req := buildSetRuleRequestFromPlan(plan)
-	if req.Action != "DROP" || req.Match != "IP" || req.Value != "1.2.3.4" ||
-		req.Priority != 1 || req.Enabled != false {
-		t.Errorf("request = %+v", req)
-	}
-	raw, err := json.Marshal(req)
+	raw, err := json.Marshal(resourceRuleRequestFromModel(plan))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -82,13 +69,12 @@ func TestResourceRule_RoundTrip(t *testing.T) {
 		Priority:   types.Int64Value(10),
 		Enabled:    types.BoolValue(true),
 	}
-	req := buildSetRuleRequestFromPlan(plan)
-	raw, err := json.Marshal(req)
+	raw, err := json.Marshal(resourceRuleRequestFromModel(plan))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	// Emulate the server echo: it adds ruleId, not a usable resourceId.
-	envelope := `{"ruleId":1,` + string(raw)[1:]
+	envelope := `{"ruleId":1,"resourceId":null,` + string(raw)[1:]
 	var rule client.ResourceRule
 	if err := json.Unmarshal([]byte(envelope), &rule); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -99,17 +85,45 @@ func TestResourceRule_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestResourceRule_ImportUsesAddressResourceID pins the import mapping:
-// resource_id comes from the "{resource_id}/{rule_id}" address even when
-// the wire rule carries 0.
-func TestResourceRule_ImportUsesAddressResourceID(t *testing.T) {
-	rule := &client.ResourceRule{RuleID: 5, Action: "DROP", Match: "COUNTRY_IS_NOT", Value: "FR", Priority: 2, Enabled: true}
-	m := applyResourceRuleResponse(ResourceRuleModel{ResourceID: types.Int64Value(13)}, rule)
-	if m.ResourceID.ValueInt64() != 13 {
-		t.Errorf("ResourceID = %d, want 13 (from the import address)", m.ResourceID.ValueInt64())
+// emptyResourceRuleState returns a null state for the resource schema, as
+// the framework hands it to ImportState.
+func emptyResourceRuleState(t *testing.T) tfsdk.State {
+	t.Helper()
+	var sresp resource.SchemaResponse
+	NewResourceRuleResource().Schema(context.Background(), resource.SchemaRequest{}, &sresp)
+	return tfsdk.State{
+		Schema: sresp.Schema,
+		Raw:    tftypes.NewValue(sresp.Schema.Type().TerraformType(context.Background()), nil),
 	}
-	if m.ID.ValueInt64() != 5 || m.Match.ValueString() != "COUNTRY_IS_NOT" {
-		t.Errorf("model = %+v", m)
+}
+
+// TestResourceRule_ImportState runs ImportState itself: resource_id must
+// come from the "{resource_id}/{rule_id}" address, since the rules list
+// does not carry it.
+func TestResourceRule_ImportState(t *testing.T) {
+	r := &ResourceRuleResource{}
+	resp := &resource.ImportStateResponse{State: emptyResourceRuleState(t)}
+	r.ImportState(context.Background(), resource.ImportStateRequest{ID: "13/5"}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("ImportState: %v", resp.Diagnostics)
+	}
+	var m ResourceRuleModel
+	if diags := resp.State.Get(context.Background(), &m); diags.HasError() {
+		t.Fatalf("state get: %v", diags)
+	}
+	if m.ResourceID.ValueInt64() != 13 || m.ID.ValueInt64() != 5 {
+		t.Errorf("resource_id/id = %d/%d, want 13/5", m.ResourceID.ValueInt64(), m.ID.ValueInt64())
+	}
+}
+
+func TestResourceRule_ImportStateInvalidID(t *testing.T) {
+	for _, id := range []string{"13", "x/5", "13/y", ""} {
+		r := &ResourceRuleResource{}
+		resp := &resource.ImportStateResponse{State: emptyResourceRuleState(t)}
+		r.ImportState(context.Background(), resource.ImportStateRequest{ID: id}, resp)
+		if !resp.Diagnostics.HasError() {
+			t.Errorf("import ID %q accepted, want an error", id)
+		}
 	}
 }
 
@@ -135,7 +149,7 @@ func TestResourceRule_MatchValidator(t *testing.T) {
 		return true
 	}
 
-	for _, v := range []string{"CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "ASN", "REGION", "METHOD"} {
+	for _, v := range resourceRuleMatchTypes {
 		if !validate(v) {
 			t.Errorf("match %q rejected, want accepted", v)
 		}
@@ -143,6 +157,14 @@ func TestResourceRule_MatchValidator(t *testing.T) {
 	for _, v := range []string{"country", "HOST", ""} {
 		if validate(v) {
 			t.Errorf("match %q accepted, want rejected", v)
+		}
+	}
+
+	// Pin the list to RESOURCE_RULE_MATCH_TYPES in Pangolin 1.24
+	// (server/lib/validators.ts) so a type removed by mistake is caught.
+	for _, v := range []string{"CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "ASN", "REGION", "METHOD"} {
+		if !slices.Contains(resourceRuleMatchTypes, v) {
+			t.Errorf("resourceRuleMatchTypes lacks %q, which Pangolin 1.24 accepts", v)
 		}
 	}
 }

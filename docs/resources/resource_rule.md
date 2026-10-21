@@ -32,7 +32,8 @@ resource "pangolin_resource_rule" "block_country" {
   priority    = 10
 }
 
-# Drop everything from outside France, then keep evaluating later rules
+# Drop every request from outside France. DROP ends evaluation for the
+# requests it matches; only French requests go on to the later rules.
 resource "pangolin_resource_rule" "france_only" {
   resource_id = pangolin_resource.example.id
   action      = "DROP"
