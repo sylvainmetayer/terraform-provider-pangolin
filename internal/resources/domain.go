@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -13,11 +14,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
@@ -109,29 +111,46 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"cert_resolver": schema.StringAttribute{
-				Description: "Traefik certificate resolver used for this domain. Only for `type = \"wildcard\"`. Removing it clears the resolver.",
-				Optional:    true,
+				Description: "Traefik certificate resolver used for this domain. Only settable for `type = \"wildcard\"`, where removing it clears the resolver. " +
+					"On `ns` / `cname` domains the server cannot change it after creation, so the provider only reports the server value.",
+				Optional: true,
+				Computed: true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
+				PlanModifiers: []planmodifier.String{
+					domainCertSettingModifier{},
+				},
 			},
 			"prefer_wildcard_cert": schema.BoolAttribute{
-				Description: "Request a wildcard certificate instead of one certificate per subdomain. Only for `type = \"wildcard\"`. Defaults to `false`.",
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(false),
+				Description: "Request a wildcard certificate instead of one certificate per subdomain. Only settable for `type = \"wildcard\"`, where it defaults to `false`. " +
+					"On `ns` / `cname` domains the server cannot change it after creation, so the provider only reports the server value.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.Bool{
+					domainCertSettingModifier{},
+				},
 			},
 			"verified": schema.BoolAttribute{
-				Description: "Whether Pangolin has verified the domain's DNS records. Always `true` for `wildcard` domains.",
+				Description: "Whether Pangolin has verified the domain's DNS records. Always `true` for `wildcard` domains. Updated on refresh.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"failed": schema.BoolAttribute{
-				Description: "Whether Pangolin stopped retrying the DNS verification. Retry it from the Pangolin UI once the records are fixed.",
+				Description: "Whether Pangolin stopped retrying the DNS verification. Retry it from the Pangolin UI once the records are fixed. Updated on refresh.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"error_message": schema.StringAttribute{
-				Description: "Last DNS verification error, if any.",
+				Description: "Last DNS verification error, if any. Updated on refresh.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"config_managed": schema.BoolAttribute{
 				Description: "Whether the domain is declared in the Pangolin config file. Such domains cannot be deleted through the API.",
@@ -141,8 +160,12 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"dns_records": schema.ListNestedAttribute{
-				Description: "DNS records to create at your DNS provider, sorted by record ID. For `wildcard` domains the A records carry the server IP when Pangolin knows it, otherwise a placeholder.",
-				Computed:    true,
+				Description: "DNS records to create at your DNS provider, sorted by record ID. For `wildcard` domains the A records carry the server IP when Pangolin knows it, otherwise a placeholder. " +
+					"Updated on refresh; an in-place update keeps the known records, so `for_each` over them stays plannable.",
+				Computed: true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"record_type": schema.StringAttribute{
@@ -176,9 +199,11 @@ func (r *DomainResource) Configure(_ context.Context, req resource.ConfigureRequ
 	r.client = c
 }
 
-// ValidateConfig rejects cert settings on ns / cname domains: the
+// ValidateConfig rejects cert settings on ns / cname domains (the
 // server stores them on create but refuses every later update, so
-// they could never be changed or removed.
+// they could never be changed or removed) and a cname on a root
+// domain (refused by the server). Create checks the cert settings
+// again once every value is known.
 func (r *DomainResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var cfg DomainResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
@@ -186,6 +211,21 @@ func (r *DomainResource) ValidateConfig(ctx context.Context, req resource.Valida
 		return
 	}
 	resp.Diagnostics.Append(validateDomainCertSettings(cfg)...)
+	resp.Diagnostics.Append(validateDomainCNAMERoot(cfg)...)
+}
+
+// validateDomainCNAMERoot mirrors the server's isSecondLevelDomain
+// check: a cname cannot sit on a two-label name such as example.com.
+func validateDomainCNAMERoot(cfg DomainResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if cfg.Type.IsUnknown() || cfg.Type.ValueString() != "cname" || cfg.BaseDomain.IsUnknown() || cfg.BaseDomain.IsNull() {
+		return diags
+	}
+	if strings.Count(cfg.BaseDomain.ValueString(), ".") == 1 {
+		diags.AddAttributeError(path.Root("base_domain"), "cname on a root domain",
+			"A cname domain cannot be a root domain (RFC 1912 section 2.4 prohibits CNAME records at the zone apex). Use a subdomain such as apps.example.com.")
+	}
+	return diags
 }
 
 func validateDomainCertSettings(cfg DomainResourceModel) diag.Diagnostics {
@@ -193,7 +233,7 @@ func validateDomainCertSettings(cfg DomainResourceModel) diag.Diagnostics {
 	if cfg.Type.IsNull() || cfg.Type.IsUnknown() || cfg.Type.ValueString() == domainTypeWildcard {
 		return diags
 	}
-	if !cfg.CertResolver.IsNull() {
+	if !cfg.CertResolver.IsNull() && !cfg.CertResolver.IsUnknown() {
 		diags.AddAttributeError(path.Root("cert_resolver"), "Unsupported cert_resolver",
 			fmt.Sprintf("cert_resolver is only supported for type = %q domains.", domainTypeWildcard))
 	}
@@ -211,18 +251,25 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Values unknown at validate time are known now: refuse cert
+	// settings on ns / cname before anything is written.
+	resp.Diagnostics.Append(validateDomainCertSettings(plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	createReq := &client.CreateDomainRequest{
-		Type:         plan.Type.ValueString(),
-		BaseDomain:   plan.BaseDomain.ValueString(),
-		CertResolver: plan.CertResolver.ValueStringPointer(),
+		Type:       plan.Type.ValueString(),
+		BaseDomain: plan.BaseDomain.ValueString(),
 	}
 	if plan.Type.ValueString() == domainTypeWildcard {
+		createReq.CertResolver = plan.CertResolver.ValueStringPointer()
 		createReq.PreferWildcardCert = plan.PreferWildcardCert.ValueBoolPointer()
 	}
 
-	domainID, err := r.client.CreateDomain(ctx, createReq)
+	domainID, err := r.client.CreateDomain(ctx, r.client.OrgID, createReq)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create domain", err.Error()+domainCreateErrorHint(plan.Type.ValueString()))
+		resp.Diagnostics.AddError("Failed to create domain", err.Error()+domainCreateErrorHint(plan.Type.ValueString(), err))
 		return
 	}
 
@@ -281,7 +328,7 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 			CertResolver:       plan.CertResolver.ValueStringPointer(),
 			PreferWildcardCert: plan.PreferWildcardCert.ValueBoolPointer(),
 		}
-		if err := r.client.UpdateDomain(ctx, state.ID.ValueString(), updateReq); err != nil {
+		if err := r.client.UpdateDomain(ctx, r.client.OrgID, state.ID.ValueString(), updateReq); err != nil {
 			resp.Diagnostics.AddError("Failed to update domain", err.Error())
 			return
 		}
@@ -292,7 +339,27 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	keepPlannedVerification(&newState, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+}
+
+// keepPlannedVerification keeps the verification attributes the plan
+// carried over from state (UseStateForUnknown): an update only changes
+// cert settings, and a verification that progressed meanwhile would
+// otherwise differ from the plan. The next refresh picks it up.
+func keepPlannedVerification(m *DomainResourceModel, plan DomainResourceModel) {
+	if !plan.Verified.IsUnknown() {
+		m.Verified = plan.Verified
+	}
+	if !plan.Failed.IsUnknown() {
+		m.Failed = plan.Failed
+	}
+	if !plan.ErrorMessage.IsUnknown() {
+		m.ErrorMessage = plan.ErrorMessage
+	}
+	if !plan.DNSRecords.IsUnknown() {
+		m.DNSRecords = plan.DNSRecords
+	}
 }
 
 func (r *DomainResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -302,7 +369,7 @@ func (r *DomainResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	if err := r.client.DeleteDomain(ctx, state.ID.ValueString()); err != nil {
+	if err := r.client.DeleteDomain(ctx, r.client.OrgID, state.ID.ValueString()); err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			return
 		}
@@ -386,11 +453,72 @@ func nonEmptyStringPtr(s *string) *string {
 	return s
 }
 
-// domainCreateErrorHint explains the usual causes of a refused create.
-func domainCreateErrorHint(domainType string) string {
-	if domainType == domainTypeWildcard {
+// domainCreateErrorHint explains a create refused because the edition
+// does not support the type: Community Edition answers 501 for ns and
+// cname. Other errors (duplicate, overlap, root cname) get no hint.
+func domainCreateErrorHint(domainType string, err error) string {
+	if domainType == domainTypeWildcard || !strings.Contains(err.Error(), "(status 501)") {
 		return ""
 	}
 	return "\n\nns and cname domains require Pangolin Enterprise Edition or Pangolin Cloud; " +
 		"Community Edition only accepts type = \"wildcard\"."
+}
+
+// domainCertSettingModifier plans cert_resolver / prefer_wildcard_cert
+// when they are absent from the config. On a wildcard domain, absent
+// means cleared (null resolver, prefer_wildcard_cert = false). On ns
+// and cname domains the server cannot change them after creation, so
+// the provider plans what the server holds (or the create defaults),
+// never a change it could not apply.
+type domainCertSettingModifier struct{}
+
+func (m domainCertSettingModifier) Description(_ context.Context) string {
+	return "Plans the cleared value on wildcard domains and the server value on ns / cname domains when unset."
+}
+
+func (m domainCertSettingModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+// plannedType returns the planned domain type, and false when the
+// modifier must leave the plan alone (destroy, unknown type).
+func (m domainCertSettingModifier) plannedType(ctx context.Context, plan tfsdk.Plan) (string, bool) {
+	if plan.Raw.IsNull() {
+		return "", false
+	}
+	var typ types.String
+	if diags := plan.GetAttribute(ctx, path.Root("type"), &typ); diags.HasError() || typ.IsUnknown() || typ.IsNull() {
+		return "", false
+	}
+	return typ.ValueString(), true
+}
+
+func (m domainCertSettingModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+	typ, ok := m.plannedType(ctx, req.Plan)
+	if !ok {
+		return
+	}
+	if typ != domainTypeWildcard && !req.StateValue.IsNull() {
+		resp.PlanValue = req.StateValue
+		return
+	}
+	resp.PlanValue = types.StringNull()
+}
+
+func (m domainCertSettingModifier) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+	typ, ok := m.plannedType(ctx, req.Plan)
+	if !ok {
+		return
+	}
+	if typ != domainTypeWildcard && !req.StateValue.IsNull() {
+		resp.PlanValue = req.StateValue
+		return
+	}
+	resp.PlanValue = types.BoolValue(false)
 }

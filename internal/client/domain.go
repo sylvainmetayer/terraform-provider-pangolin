@@ -26,11 +26,11 @@ type CreateDomainResponse struct {
 	DomainID string `json:"domainId"`
 }
 
-// CreateDomain adds a domain to the provider organization and returns
-// its ID. On Community Edition only `type = "wildcard"` is accepted
-// (ns and cname answer 501).
-func (c *Client) CreateDomain(ctx context.Context, req *CreateDomainRequest) (string, error) {
-	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/domain", c.OrgID), req)
+// CreateDomain adds a domain to orgID and returns its ID. On
+// Community Edition only `type = "wildcard"` is accepted (ns and
+// cname answer 501).
+func (c *Client) CreateDomain(ctx context.Context, orgID string, req *CreateDomainRequest) (string, error) {
+	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/domain", orgID), req)
 	if err != nil {
 		return "", err
 	}
@@ -44,27 +44,26 @@ func (c *Client) CreateDomain(ctx context.Context, req *CreateDomainRequest) (st
 	return out.DomainID, nil
 }
 
-// UpdateDomainRequest is the body for POST /org/{org}/domain/{id},
-// the non-deprecated twin of the PATCH route used by
-// [Client.PatchDomain]. Unlike [PatchDomainRequest], `certResolver`
-// is always sent: an explicit null clears the resolver, which the
-// server applies whenever the key is present. `preferWildcardCert`
-// is ignored by the server when null, so it is omitted instead.
-// The server refuses both fields on non-wildcard domains (400).
+// UpdateDomainRequest is the body for POST /org/{org}/domain/{id}
+// (the PATCH twin of this route is deprecated). `certResolver` is
+// always sent: an explicit null clears the resolver, which the server
+// applies whenever the key is present. `preferWildcardCert` is
+// ignored by the server when null, so it is omitted instead. The
+// server refuses both fields on non-wildcard domains (400).
 type UpdateDomainRequest struct {
 	CertResolver       *string `json:"certResolver"`
 	PreferWildcardCert *bool   `json:"preferWildcardCert,omitempty"`
 }
 
 // UpdateDomain updates the cert-resolver settings of a wildcard domain.
-func (c *Client) UpdateDomain(ctx context.Context, domainID string, req *UpdateDomainRequest) error {
-	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/org/%s/domain/%s", c.OrgID, domainID), req)
+func (c *Client) UpdateDomain(ctx context.Context, orgID, domainID string, req *UpdateDomainRequest) error {
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/org/%s/domain/%s", orgID, domainID), req)
 	return err
 }
 
-// DeleteDomain removes a domain from the provider organization. The
-// server refuses (400) to delete a domain managed by its config file.
-func (c *Client) DeleteDomain(ctx context.Context, domainID string) error {
-	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/org/%s/domain/%s", c.OrgID, domainID), nil)
+// DeleteDomain removes a domain from orgID. The server refuses (400)
+// to delete a domain managed by its config file.
+func (c *Client) DeleteDomain(ctx context.Context, orgID, domainID string) error {
+	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/org/%s/domain/%s", orgID, domainID), nil)
 	return err
 }

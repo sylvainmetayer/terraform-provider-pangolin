@@ -2992,25 +2992,8 @@ func (c *Client) GetIDPOrgPolicy(ctx context.Context, idpID int, orgID string) (
 
 // --- Domain ---
 
-// GetDomainByID retrieves a domain by ID (via list + filter). Kept
-// for callers that still use the list-based lookup.
-func (c *Client) GetDomainByID(ctx context.Context, domainID string) (*Domain, error) {
-	domains, err := c.ListDomains(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, d := range domains {
-		if d.DomainID == domainID {
-			domain := d
-			return &domain, nil
-		}
-	}
-	return nil, fmt.Errorf("domain %s: %w", domainID, ErrNotFound)
-}
-
 // GetDomain retrieves a domain by ID via the per-id endpoint
-// (GET /org/{org}/domain/{id}) - preferred over GetDomainByID since
-// it avoids fetching the full list.
+// (GET /org/{org}/domain/{id}).
 func (c *Client) GetDomain(ctx context.Context, orgID, domainID string) (*Domain, error) {
 	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/domain/%s", orgID, domainID), nil)
 	if err != nil {
@@ -3021,45 +3004,6 @@ func (c *Client) GetDomain(ctx context.Context, orgID, domainID string) (*Domain
 		return nil, fmt.Errorf("failed to parse domain: %w", err)
 	}
 	return &domain, nil
-}
-
-// PatchDomainRequest is the body for the narrow PATCH endpoint.
-// The OpenAPI does not advertise a request schema; probed live, the
-// only two accepted keys are `certResolver` (string, nullable) and
-// `preferWildcardCert` (bool). Sending any other key - including
-// `baseDomain` / `type` / `verified` - fails the validator with
-// `Unrecognized key: "..."` (HTTP 400). Pointer types preserve the
-// distinction between "leave unchanged" (nil - omitted from the
-// body) and "set to null/false" (non-nil).
-type PatchDomainRequest struct {
-	CertResolver       *string `json:"certResolver,omitempty"`
-	PreferWildcardCert *bool   `json:"preferWildcardCert,omitempty"`
-}
-
-// PatchDomainResponse is the trimmed payload returned by the PATCH
-// endpoint. The API echoes only the two updatable fields plus the
-// domain ID, not the full Domain entity.
-type PatchDomainResponse struct {
-	DomainID           string  `json:"domainId"`
-	CertResolver       *string `json:"certResolver"`
-	PreferWildcardCert bool    `json:"preferWildcardCert"`
-}
-
-// PatchDomain updates the cert-resolver settings on a domain. The
-// upstream endpoint accepts only `certResolver` and
-// `preferWildcardCert`; everything else is rejected with a 400. Use
-// [Client.GetDomain] after the call if the full updated Domain
-// payload is needed - the PATCH response is intentionally narrow.
-func (c *Client) PatchDomain(ctx context.Context, orgID, domainID string, req *PatchDomainRequest) (*PatchDomainResponse, error) {
-	resp, err := c.doRequest(ctx, "PATCH", fmt.Sprintf("/org/%s/domain/%s", orgID, domainID), req)
-	if err != nil {
-		return nil, err
-	}
-	var out PatchDomainResponse
-	if err := json.Unmarshal(resp.Data, &out); err != nil {
-		return nil, fmt.Errorf("failed to parse PatchDomain response: %w", err)
-	}
-	return &out, nil
 }
 
 // ListDomainDNSRecords retrieves the DNS records configured for a

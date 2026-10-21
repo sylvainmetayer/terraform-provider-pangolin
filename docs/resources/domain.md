@@ -46,17 +46,17 @@ output "portal_dns_records" {
 
 ### Optional
 
-- `cert_resolver` (String) Traefik certificate resolver used for this domain. Only for `type = "wildcard"`. Removing it clears the resolver.
-- `prefer_wildcard_cert` (Boolean) Request a wildcard certificate instead of one certificate per subdomain. Only for `type = "wildcard"`. Defaults to `false`.
+- `cert_resolver` (String) Traefik certificate resolver used for this domain. Only settable for `type = "wildcard"`, where removing it clears the resolver. On `ns` / `cname` domains the server cannot change it after creation, so the provider only reports the server value.
+- `prefer_wildcard_cert` (Boolean) Request a wildcard certificate instead of one certificate per subdomain. Only settable for `type = "wildcard"`, where it defaults to `false`. On `ns` / `cname` domains the server cannot change it after creation, so the provider only reports the server value.
 
 ### Read-Only
 
 - `config_managed` (Boolean) Whether the domain is declared in the Pangolin config file. Such domains cannot be deleted through the API.
-- `dns_records` (Attributes List) DNS records to create at your DNS provider, sorted by record ID. For `wildcard` domains the A records carry the server IP when Pangolin knows it, otherwise a placeholder. (see [below for nested schema](#nestedatt--dns_records))
-- `error_message` (String) Last DNS verification error, if any.
-- `failed` (Boolean) Whether Pangolin stopped retrying the DNS verification. Retry it from the Pangolin UI once the records are fixed.
+- `dns_records` (Attributes List) DNS records to create at your DNS provider, sorted by record ID. For `wildcard` domains the A records carry the server IP when Pangolin knows it, otherwise a placeholder. Updated on refresh; an in-place update keeps the known records, so `for_each` over them stays plannable. (see [below for nested schema](#nestedatt--dns_records))
+- `error_message` (String) Last DNS verification error, if any. Updated on refresh.
+- `failed` (Boolean) Whether Pangolin stopped retrying the DNS verification. Retry it from the Pangolin UI once the records are fixed. Updated on refresh.
 - `id` (String) The domain ID.
-- `verified` (Boolean) Whether Pangolin has verified the domain's DNS records. Always `true` for `wildcard` domains.
+- `verified` (Boolean) Whether Pangolin has verified the domain's DNS records. Always `true` for `wildcard` domains. Updated on refresh.
 
 <a id="nestedatt--dns_records"></a>
 ### Nested Schema for `dns_records`

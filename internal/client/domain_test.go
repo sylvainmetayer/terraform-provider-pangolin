@@ -24,7 +24,7 @@ func TestCreateDomain_PathBodyAndID(t *testing.T) {
 	})
 	resolver := "letsencrypt"
 	prefer := true
-	id, err := c.CreateDomain(context.Background(), &CreateDomainRequest{
+	id, err := c.CreateDomain(context.Background(), "test-org", &CreateDomainRequest{
 		Type: "wildcard", BaseDomain: "apps.example.com", CertResolver: &resolver, PreferWildcardCert: &prefer,
 	})
 	if err != nil {
@@ -47,7 +47,7 @@ func TestCreateDomain_OmitsUnsetCertSettings(t *testing.T) {
 		raw, _ = io.ReadAll(r.Body)
 		writeEnvelope(t, w, http.StatusCreated, map[string]any{"domainId": "dom-2"})
 	})
-	if _, err := c.CreateDomain(context.Background(), &CreateDomainRequest{Type: "cname", BaseDomain: "portal.example.com"}); err != nil {
+	if _, err := c.CreateDomain(context.Background(), "test-org", &CreateDomainRequest{Type: "cname", BaseDomain: "portal.example.com"}); err != nil {
 		t.Fatalf("CreateDomain: %v", err)
 	}
 	// The server schema is strict: unset keys must not be sent at all.
@@ -60,7 +60,7 @@ func TestCreateDomain_MissingIDIsAnError(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		writeEnvelope(t, w, http.StatusCreated, map[string]any{})
 	})
-	if _, err := c.CreateDomain(context.Background(), &CreateDomainRequest{Type: "wildcard", BaseDomain: "a.example.com"}); err == nil {
+	if _, err := c.CreateDomain(context.Background(), "test-org", &CreateDomainRequest{Type: "wildcard", BaseDomain: "a.example.com"}); err == nil {
 		t.Fatal("expected an error for a response without domainId")
 	}
 }
@@ -75,7 +75,7 @@ func TestUpdateDomain_SendsNullResolverToClear(t *testing.T) {
 		writeEnvelope(t, w, http.StatusOK, map[string]any{"domainId": "dom-1", "certResolver": nil, "preferWildcardCert": false})
 	})
 	prefer := false
-	if err := c.UpdateDomain(context.Background(), "dom-1", &UpdateDomainRequest{PreferWildcardCert: &prefer}); err != nil {
+	if err := c.UpdateDomain(context.Background(), "test-org", "dom-1", &UpdateDomainRequest{PreferWildcardCert: &prefer}); err != nil {
 		t.Fatalf("UpdateDomain: %v", err)
 	}
 	if got := string(raw); got != `{"certResolver":null,"preferWildcardCert":false}` {
@@ -90,7 +90,7 @@ func TestDeleteDomain_Path(t *testing.T) {
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{"success": true})
 	})
-	if err := c.DeleteDomain(context.Background(), "dom-1"); err != nil {
+	if err := c.DeleteDomain(context.Background(), "test-org", "dom-1"); err != nil {
 		t.Fatalf("DeleteDomain: %v", err)
 	}
 }
