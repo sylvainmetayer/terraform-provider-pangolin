@@ -152,6 +152,24 @@ func TestOrgIDPDetail_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHydrateOrgIDPAfterWrite_KeepsPlannedSecret(t *testing.T) {
+	detail := &client.OrgIDPDetail{
+		IDP: client.IDP{IDPId: 5, Name: "g"},
+		IDPOidcConfig: client.IDPOidcConfig{
+			Variant:      "oidc",
+			ClientSecret: "server-normalized",
+		},
+	}
+	plan := OrgIDPResourceModel{ClientSecret: types.StringValue("planned\n")}
+	hydrateOrgIDPAfterWrite(&plan, detail)
+	if got := plan.ClientSecret.ValueString(); got != "planned\n" {
+		t.Errorf("ClientSecret = %q, want the planned value after a write", got)
+	}
+	if plan.Name.ValueString() != "g" {
+		t.Errorf("other fields must still be hydrated, Name = %q", plan.Name.ValueString())
+	}
+}
+
 // -----------------------------------------------------------------------------
 // CreateIDPRequest build (used by Create() / Update()) - shape check
 // -----------------------------------------------------------------------------

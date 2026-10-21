@@ -157,11 +157,25 @@ func TestResolveIDPVariant(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveIDPVariant(&client.IDP{Variant: tt.idpVar}, &client.IDPOidcConfig{Variant: tt.cfgVar})
+			got := resolveIDPVariant(types.StringNull(), &client.IDP{Variant: tt.idpVar}, &client.IDPOidcConfig{Variant: tt.cfgVar})
 			if got != tt.want {
 				t.Fatalf("resolveIDPVariant(%q, %q) = %q, want %q", tt.idpVar, tt.cfgVar, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveIDPVariant_KeepsKnownPrior(t *testing.T) {
+	// A server that sends no variant must not flip an explicit
+	// `variant = "google"` to "oidc" at apply time.
+	got := resolveIDPVariant(types.StringValue("google"), &client.IDP{}, &client.IDPOidcConfig{})
+	if got != "google" {
+		t.Fatalf("variant = %q, want google (prior kept)", got)
+	}
+	// The server value still wins over the prior one.
+	got = resolveIDPVariant(types.StringValue("google"), &client.IDP{}, &client.IDPOidcConfig{Variant: "azure"})
+	if got != "azure" {
+		t.Fatalf("variant = %q, want azure (server wins)", got)
 	}
 }
 

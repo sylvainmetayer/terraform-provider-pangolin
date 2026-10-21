@@ -255,7 +255,7 @@ func (r *OrgIDPResource) Create(ctx context.Context, req resource.CreateRequest,
 		resp.Diagnostics.AddError("Failed to read org IDP after create", err.Error())
 		return
 	}
-	hydrateOrgIDPState(&plan, detail)
+	hydrateOrgIDPAfterWrite(&plan, detail)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -312,7 +312,7 @@ func (r *OrgIDPResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resp.Diagnostics.AddError("Failed to read org IDP after update", err.Error())
 		return
 	}
-	hydrateOrgIDPState(&plan, detail)
+	hydrateOrgIDPAfterWrite(&plan, detail)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -363,6 +363,17 @@ func (r *OrgIDPResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
+// hydrateOrgIDPAfterWrite hydrates the plan after Create / Update but
+// keeps the planned client_secret: the value just written is
+// authoritative, and adopting the GET value could only turn a server-side
+// normalization into an "inconsistent result after apply". Read still
+// maps the secret, so a rotation outside Terraform shows as drift.
+func hydrateOrgIDPAfterWrite(plan *OrgIDPResourceModel, detail *client.OrgIDPDetail) {
+	secret := plan.ClientSecret
+	hydrateOrgIDPState(plan, detail)
+	plan.ClientSecret = secret
+}
+
 // hydrateOrgIDPState copies every server-owned field from a freshly-
 // fetched [client.OrgIDPDetail] into the TF state model. The server
 // returns client_secret decrypted, so it is mapped when present (an
@@ -372,7 +383,7 @@ func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail)
 	state.Name = types.StringValue(detail.IDP.Name)
 	state.AutoProvision = types.BoolValue(detail.IDP.AutoProvision)
 	state.Tags = types.StringValue(detail.IDP.Tags)
-	state.Variant = types.StringValue(resolveIDPVariant(&detail.IDP, &detail.IDPOidcConfig))
+	state.Variant = types.StringValue(resolveIDPVariant(state.Variant, &detail.IDP, &detail.IDPOidcConfig))
 	state.ClientID = types.StringValue(detail.IDPOidcConfig.ClientID)
 	if detail.IDPOidcConfig.ClientSecret != "" {
 		state.ClientSecret = types.StringValue(detail.IDPOidcConfig.ClientSecret)

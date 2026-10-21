@@ -221,7 +221,7 @@ func (r *IDPResource) Create(ctx context.Context, req resource.CreateRequest, re
 	plan.Name = types.StringValue(idp.Name)
 	plan.AutoProvision = types.BoolValue(idp.AutoProvision)
 	plan.Tags = types.StringValue(idp.Tags)
-	plan.Variant = types.StringValue(resolveIDPVariant(idp, oidcCfg))
+	plan.Variant = types.StringValue(resolveIDPVariant(plan.Variant, idp, oidcCfg))
 	plan.EmailPath = types.StringValue(oidcCfg.EmailPath)
 	plan.NamePath = types.StringValue(oidcCfg.NamePath)
 
@@ -330,7 +330,7 @@ func applyIDPReadResponse(m IDPResourceModel, idp *client.IDP, cfg *client.IDPOi
 	m.Name = types.StringValue(idp.Name)
 	m.AutoProvision = types.BoolValue(idp.AutoProvision)
 	m.Tags = types.StringValue(idp.Tags)
-	m.Variant = types.StringValue(resolveIDPVariant(idp, cfg))
+	m.Variant = types.StringValue(resolveIDPVariant(m.Variant, idp, cfg))
 	m.ClientID = types.StringValue(cfg.ClientID)
 	if cfg.ClientSecret != "" {
 		m.ClientSecret = types.StringValue(cfg.ClientSecret)
@@ -346,14 +346,19 @@ func applyIDPReadResponse(m IDPResourceModel, idp *client.IDP, cfg *client.IDPOi
 
 // resolveIDPVariant returns the OIDC variant of a single-GET payload.
 // The variant column lives on idpOidcConfig, so the GET endpoints only
-// carry it there; idp.variant is set by the LIST projection. A missing
-// value falls back to the generic "oidc", the column default.
-func resolveIDPVariant(idp *client.IDP, cfg *client.IDPOidcConfig) string {
+// carry it there; idp.variant is set by the LIST projection. When the
+// server sends neither, a known prior (planned or state) value is kept
+// so an explicit `variant` never flips at apply; otherwise it falls back
+// to the generic "oidc", the column default.
+func resolveIDPVariant(prior types.String, idp *client.IDP, cfg *client.IDPOidcConfig) string {
 	if cfg != nil && cfg.Variant != "" {
 		return cfg.Variant
 	}
 	if idp.Variant != "" {
 		return idp.Variant
+	}
+	if !prior.IsNull() && !prior.IsUnknown() && prior.ValueString() != "" {
+		return prior.ValueString()
 	}
 	return "oidc"
 }

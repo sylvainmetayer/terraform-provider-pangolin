@@ -166,13 +166,17 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"protocol": schema.StringAttribute{
-				Description: "The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / " +
-					"`tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.",
+				Description: "The L4 protocol (tcp or udp). Legacy alias: Pangolin derives the transport " +
+					"from `mode`, so this follows `mode` for `tcp` / `udp` resources (setting another value " +
+					"is an error) and is `tcp` for `http`, where it is ignored. Leave it unset.",
 				Optional: true,
 				Computed: true,
-				Default:  stringdefault.StaticString("tcp"),
+				PlanModifiers: []planmodifier.String{
+					protocolFromModeModifier{},
+				},
 				Validators: []validator.String{
 					stringvalidator.OneOf("tcp", "udp"),
+					protocolMatchesModeValidator{},
 				},
 			},
 			"mode": schema.StringAttribute{
@@ -803,23 +807,4 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 		m.Headers = nil
 	}
 	return m
-}
-
-// resolveHTTPResourceProtocol picks the state value for `protocol`.
-// Pangolin 1.24 has no protocol column (the transport lives in mode)
-// and never echoes the field, so a server value wins only when present.
-// Otherwise the planned / prior value is kept, so plan and apply agree
-// (a UDP resource with the "tcp" schema default stays "tcp"). Only an
-// import, which has no prior value, derives the protocol from mode.
-func resolveHTTPResourceProtocol(prior types.String, res *client.Resource) types.String {
-	if res.Protocol != "" {
-		return types.StringValue(res.Protocol)
-	}
-	if !prior.IsNull() && !prior.IsUnknown() {
-		return prior
-	}
-	if res.Mode == "udp" {
-		return types.StringValue("udp")
-	}
-	return types.StringValue("tcp")
 }

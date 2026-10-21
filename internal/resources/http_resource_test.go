@@ -284,29 +284,33 @@ func TestApplyHTTPResourceResponse_ImportDerivesProtocolFromMode(t *testing.T) {
 	}
 }
 
-// Create / refresh: the server never echoes protocol, so the planned or
-// prior value is kept. A UDP resource with protocol left out plans the
-// "tcp" schema default and must not come back as "udp".
-func TestApplyHTTPResourceResponse_KeepsPlannedProtocol(t *testing.T) {
-	for _, tc := range []struct{ mode, planned string }{
+// L4 resources: protocol follows mode on Create, Read and Import alike,
+// whatever the prior value, so the three paths agree.
+func TestApplyHTTPResourceResponse_L4ProtocolFollowsMode(t *testing.T) {
+	for _, tc := range []struct{ mode, prior string }{
 		{"udp", "tcp"},
 		{"tcp", "udp"},
-		{"http", "udp"},
 	} {
 		res := &client.Resource{ResourceID: 57, Name: "x", Mode: tc.mode}
-		plan := HTTPResourceModel{ID: types.Int64Value(57), Protocol: types.StringValue(tc.planned)}
+		plan := HTTPResourceModel{ID: types.Int64Value(57), Protocol: types.StringValue(tc.prior)}
 		m := applyHTTPResourceResponse(plan, res)
-		if got := m.Protocol.ValueString(); got != tc.planned {
-			t.Errorf("mode %s: Protocol = %q, want planned %q", tc.mode, got, tc.planned)
+		if got := m.Protocol.ValueString(); got != tc.mode {
+			t.Errorf("mode %s: Protocol = %q, want %q", tc.mode, got, tc.mode)
 		}
 	}
 }
 
-func TestApplyHTTPResourceResponse_ServerProtocolWins(t *testing.T) {
-	res := &client.Resource{ResourceID: 58, Name: "x", Mode: "tcp", Protocol: "udp"}
+// http resources: protocol is ignored server-side, so a known prior
+// value is kept, and a pre-1.19 server echo wins over it.
+func TestApplyHTTPResourceResponse_HTTPProtocol(t *testing.T) {
+	res := &client.Resource{ResourceID: 58, Name: "x", Mode: "http"}
 	plan := HTTPResourceModel{ID: types.Int64Value(58), Protocol: types.StringValue("tcp")}
-	if got := applyHTTPResourceResponse(plan, res).Protocol.ValueString(); got != "udp" {
-		t.Errorf("Protocol = %q, want udp", got)
+	if got := applyHTTPResourceResponse(plan, res).Protocol.ValueString(); got != "tcp" {
+		t.Errorf("Protocol = %q, want prior tcp", got)
+	}
+	legacy := &client.Resource{ResourceID: 59, Name: "x", Protocol: "udp"}
+	if got := applyHTTPResourceResponse(HTTPResourceModel{}, legacy).Protocol.ValueString(); got != "udp" {
+		t.Errorf("Protocol = %q, want server-echoed udp", got)
 	}
 }
 
