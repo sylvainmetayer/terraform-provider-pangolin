@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -164,10 +165,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return lastResp, lastErr
 }
 
-// doRequestNoRetry performs a single attempt with no retry, whatever the
-// method. Pangolin creates most objects with PUT, which doRequest
-// retries: replaying a create whose response was lost (connection reset,
-// proxy 502) would leave a duplicate on the server.
+// doRequestNoRetry sends a non-idempotent request. Pangolin creates most
+// objects with PUT, which doRequest retries: replaying a create whose
+// response was lost (connection reset, proxy 502) would leave a duplicate
+// on the server. Only failures proving the server did not process the
+// request are retried: HTTP 429 and a connection that was never opened.
 func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
 	var bodyBytes []byte
 	if body != nil {
@@ -177,7 +179,39 @@ func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body
 		}
 		bodyBytes = b
 	}
-	return c.doRequestOnce(ctx, method, path, bodyBytes)
+
+	var (
+		lastResp *APIResponse
+		lastErr  error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return lastResp, ctx.Err()
+			case <-time.After(backoffDelay(attempt - 1)):
+			}
+		}
+
+		lastResp, lastErr = c.doRequestOnce(ctx, method, path, bodyBytes)
+		if !shouldRetryUnsent(lastErr) {
+			return lastResp, lastErr
+		}
+	}
+	return lastResp, lastErr
+}
+
+// shouldRetryUnsent reports whether err proves the request never reached
+// the server's handler: a 429 rate limit, or a dial failure.
+func shouldRetryUnsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrRateLimited) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
@@ -3883,6 +3917,19 @@ type AlertWebhookConfig struct {
 	BodyTemplate      *string              `json:"bodyTemplate,omitempty"`
 }
 
+// EffectiveHeaders folds the header rows the way the server does when it
+// sends the webhook (sendAlertWebhook.ts buildHeaders): keys are trimmed,
+// blank keys are skipped and the last duplicate wins.
+func (c *AlertWebhookConfig) EffectiveHeaders() map[string]string {
+	out := map[string]string{}
+	for _, h := range c.Headers {
+		if key := strings.TrimSpace(h.Key); key != "" {
+			out[key] = h.Value
+		}
+	}
+	return out
+}
+
 // AlertWebhookAction is one webhook action as returned by the GET.
 type AlertWebhookAction struct {
 	WebhookActionID int                 `json:"webhookActionId"`
@@ -4052,4 +4099,12 @@ func (c *Client) ListAlertRules(ctx context.Context, q AlertRuleListQuery) ([]Al
 			return out, nil
 		}
 	}
+}
+
+// ProbeAlertRules checks that the alert rule routes exist with a single
+// one-row list request. It returns [ErrNotFound] when they do not, as on
+// Community Edition servers or behind a wrong base URL.
+func (c *Client) ProbeAlertRules(ctx context.Context) error {
+	_, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/alert-rules?limit=1&offset=0", c.OrgID), nil)
+	return err
 }

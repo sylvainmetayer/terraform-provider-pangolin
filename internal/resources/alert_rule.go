@@ -483,6 +483,9 @@ func (r *AlertRuleResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// Source IDs computed from other resources were unknown when the
+	// config was validated; check them again now that they are known.
+	validateAlertRuleSources(plan, &resp.Diagnostics)
 	body, diags := buildAlertRuleRequest(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -497,20 +500,36 @@ func (r *AlertRuleResource) Create(ctx context.Context, req resource.CreateReque
 
 	got, err := r.client.GetAlertRule(ctx, id)
 	if err != nil {
-		// Keep the ID in state so the rule is not orphaned: Terraform
-		// marks it tainted and replaces it on the next apply.
-		plan.ID = types.Int64Value(int64(id))
-		plan.CreatedAt = types.Int64Null()
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		keepCreatedAlertRuleID(ctx, plan, id, resp)
 		resp.Diagnostics.AddError("Failed to read alert rule after create", err.Error())
 		return
 	}
 	state, diags := alertRuleToModel(ctx, got, plan)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if diags.HasError() {
+		keepCreatedAlertRuleID(ctx, plan, id, resp)
+		resp.Diagnostics.Append(diags...)
 		return
 	}
+	resp.Diagnostics.Append(diags...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// keepCreatedAlertRuleID writes the new ID to state when Create fails
+// after the server created the rule, so the rule is not orphaned:
+// Terraform marks it tainted and replaces it on the next apply.
+func keepCreatedAlertRuleID(ctx context.Context, plan AlertRuleResourceModel, id int, resp *resource.CreateResponse) {
+	plan.ID = types.Int64Value(int64(id))
+	plan.CreatedAt = types.Int64Null()
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// alertRuleRoutesMissing tells a rule that is gone (404 on its ID while
+// the list route answers) from missing routes (404 on the list too, as on
+// Community Edition or behind a wrong base URL). Any other probe error is
+// returned with missing = false so the caller can warn about it.
+func (r *AlertRuleResource) alertRuleRoutesMissing(ctx context.Context) (bool, error) {
+	err := r.client.ProbeAlertRules(ctx)
+	return errors.Is(err, client.ErrNotFound), err
 }
 
 func (r *AlertRuleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -520,15 +539,22 @@ func (r *AlertRuleResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	got, err := r.client.GetAlertRule(ctx, int(state.ID.ValueInt64()))
+	id := int(state.ID.ValueInt64())
+	got, err := r.client.GetAlertRule(ctx, id)
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
-			// A 404 also comes from a Community Edition server, which has
-			// no alert rule routes at all. Only drop the rule from state
-			// when the list route answers.
-			if _, listErr := r.client.ListAlertRules(ctx, client.AlertRuleListQuery{}); listErr != nil {
-				resp.Diagnostics.AddError("Failed to read alert rule", alertRuleErrorDetail(listErr))
+			// A 404 also comes from a server with no alert rule routes at
+			// all. Keep the rule in state in that case.
+			missing, probeErr := r.alertRuleRoutesMissing(ctx)
+			if missing {
+				resp.Diagnostics.AddError("Failed to read alert rule", alertRuleErrorDetail(probeErr))
 				return
+			}
+			if probeErr != nil {
+				resp.Diagnostics.AddWarning("Alert rule assumed deleted", fmt.Sprintf(
+					"Pangolin returned 404 for alert rule %d, and checking the alert rule routes failed: %s. "+
+						"The rule is removed from state; if the routes are unreachable, fix the provider configuration before applying.",
+					id, probeErr))
 			}
 			resp.State.RemoveResource(ctx)
 			return
@@ -551,6 +577,7 @@ func (r *AlertRuleResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
+	validateAlertRuleSources(plan, &resp.Diagnostics)
 	body, diags := buildAlertRuleRequest(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -585,6 +612,11 @@ func (r *AlertRuleResource) Delete(ctx context.Context, req resource.DeleteReque
 
 	if err := r.client.DeleteAlertRule(ctx, int(state.ID.ValueInt64())); err != nil {
 		if errors.Is(err, client.ErrNotFound) {
+			// Same check as Read: a 404 from missing routes must not
+			// pass for a successful delete.
+			if missing, probeErr := r.alertRuleRoutesMissing(ctx); missing {
+				resp.Diagnostics.AddError("Failed to delete alert rule", alertRuleErrorDetail(probeErr))
+			}
 			return
 		}
 		resp.Diagnostics.AddError("Failed to delete alert rule", err.Error())
@@ -804,10 +836,12 @@ func alertWebhookActionsToList(ctx context.Context, actions []client.AlertWebhoo
 			if cfg.UseBodyTemplate != nil && *cfg.UseBodyTemplate {
 				m.BodyTemplate = tfconv.StringFromNonEmptyPtr(cfg.BodyTemplate)
 			}
-			if len(cfg.Headers) > 0 {
+			if effective := cfg.EffectiveHeaders(); len(effective) > 0 {
+				// Folded like the server does when sending: rows the
+				// server ignores (blank or duplicate keys) are not kept.
 				headers := map[string]attr.Value{}
-				for _, h := range cfg.Headers {
-					headers[h.Key] = types.StringValue(h.Value)
+				for k, v := range effective {
+					headers[k] = types.StringValue(v)
 				}
 				mv, d := types.MapValue(types.StringType, headers)
 				diags.Append(d...)

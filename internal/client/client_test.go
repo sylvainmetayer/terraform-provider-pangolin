@@ -4464,6 +4464,37 @@ func TestCreateAlertRule_NotRetriedOnServerError(t *testing.T) {
 	}
 }
 
+func TestAlertWebhookConfig_EffectiveHeadersFoldsLikeServer(t *testing.T) {
+	cfg := AlertWebhookConfig{Headers: []AlertWebhookHeader{
+		{Key: "X-Tag", Value: "a"},
+		{Key: " ", Value: "ignored"},
+		{Key: " X-Tag ", Value: "b"},
+		{Key: "X-Other", Value: "c"},
+	}}
+	got := cfg.EffectiveHeaders()
+	want := map[string]string{"X-Tag": "b", "X-Other": "c"}
+	if len(got) != len(want) || got["X-Tag"] != "b" || got["X-Other"] != "c" {
+		t.Errorf("EffectiveHeaders = %v, want %v", got, want)
+	}
+}
+
+func TestProbeAlertRules_SingleRowRequest(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/v1/org/test-org/alert-rules" || r.URL.Query().Get("limit") != "1" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	if err := c.ProbeAlertRules(context.Background()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
 func TestGetAlertRule_DecodesAndSortsWebhooks(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/org/test-org/alert-rule/17" {

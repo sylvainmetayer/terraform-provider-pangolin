@@ -177,12 +177,11 @@ func alertRuleDetailToModel(ctx context.Context, got *client.AlertRuleDetail, di
 			if cfg.UseBodyTemplate != nil && *cfg.UseBodyTemplate {
 				wm.BodyTemplate = tfconv.StringFromNonEmptyPtr(cfg.BodyTemplate)
 			}
-			headers := map[string]string{}
-			for _, h := range cfg.Headers {
-				headers[h.Key] = h.Value
+			// Null when empty, like the resource.
+			if headers := cfg.EffectiveHeaders(); len(headers) > 0 {
+				wm.Headers, d = types.MapValueFrom(ctx, types.StringType, headers)
+				diags.Append(d...)
 			}
-			wm.Headers, d = types.MapValueFrom(ctx, types.StringType, headers)
-			diags.Append(d...)
 		}
 		m.WebhookActions = append(m.WebhookActions, wm)
 	}
