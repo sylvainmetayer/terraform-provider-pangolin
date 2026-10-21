@@ -164,6 +164,22 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return lastResp, lastErr
 }
 
+// doRequestNoRetry performs a single attempt with no retry, whatever the
+// method. Pangolin creates most objects with PUT, which doRequest
+// retries: replaying a create whose response was lost (connection reset,
+// proxy 502) would leave a duplicate on the server.
+func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
+	var bodyBytes []byte
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyBytes = b
+	}
+	return c.doRequestOnce(ctx, method, path, bodyBytes)
+}
+
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
 func (c *Client) doRequestOnce(ctx context.Context, method, path string, bodyBytes []byte) (*APIResponse, error) {
 	url := fmt.Sprintf("%s/v1%s", c.BaseURL, path)
@@ -3941,9 +3957,11 @@ func (req AlertRuleRequest) normalized() AlertRuleRequest {
 }
 
 // CreateAlertRule creates an alert rule in the provider org and
-// returns its ID (the response only carries `{alertRuleId}`).
+// returns its ID (the response only carries `{alertRuleId}`). The PUT is
+// sent once: a retried create could leave a duplicate rule that keeps
+// sending alerts.
 func (c *Client) CreateAlertRule(ctx context.Context, req *AlertRuleRequest) (int, error) {
-	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/alert-rule", c.OrgID), req.normalized())
+	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/alert-rule", c.OrgID), req.normalized())
 	if err != nil {
 		return 0, err
 	}

@@ -351,3 +351,51 @@ func TestValidateAlertRuleWebhooks_MissingCredential(t *testing.T) {
 		t.Errorf("diags = %v", diags)
 	}
 }
+
+func TestValidateAlertRuleWebhooks_CustomNeedsValue(t *testing.T) {
+	plan := alertRuleTestPlan(t)
+	var actions []alertWebhookActionModel
+	plan.WebhookActions.ElementsAs(context.Background(), &actions, false)
+	a := actions[0]
+	a.AuthType = types.StringValue("custom")
+	a.BearerToken = types.StringNull()
+	a.CustomHeaderName = types.StringValue("X-Api-Key")
+	plan.WebhookActions = types.ListValueMust(types.ObjectType{AttrTypes: alertWebhookActionAttrTypes}, []attr.Value{
+		types.ObjectValueMust(alertWebhookActionAttrTypes, map[string]attr.Value{
+			"url": a.URL, "enabled": a.Enabled, "method": a.Method,
+			"auth_type": a.AuthType, "bearer_token": a.BearerToken,
+			"basic_credentials": a.BasicCredentials, "custom_header_name": a.CustomHeaderName,
+			"custom_header_value": a.CustomHeaderValue, "headers": a.Headers,
+			"body_template": a.BodyTemplate,
+		}),
+	})
+
+	var diags diag.Diagnostics
+	validateAlertRuleWebhooks(context.Background(), plan, &diags)
+	if len(diags.Errors()) != 1 || !strings.Contains(diags.Errors()[0].Detail(), "`custom_header_value` is required") {
+		t.Errorf("diags = %v", diags)
+	}
+}
+
+func TestAlertRuleToModel_NullConfigKeepsPriorWebhook(t *testing.T) {
+	ctx := context.Background()
+	plan := alertRuleTestPlan(t)
+	body, diags := buildAlertRuleRequest(ctx, plan)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	got := serverEcho(t, 17, body)
+	// The server could not decrypt the first webhook's config.
+	got.WebhookActions[0].Config = nil
+
+	m, diags := alertRuleToModel(ctx, got, plan)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if !m.WebhookActions.Equal(plan.WebhookActions) {
+		t.Errorf("webhook_actions drifted:\n got  %v\n want %v", m.WebhookActions, plan.WebhookActions)
+	}
+	if len(diags.Warnings()) != 1 {
+		t.Errorf("want one warning, got %v", diags)
+	}
+}

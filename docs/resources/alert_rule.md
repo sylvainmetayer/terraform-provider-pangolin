@@ -101,7 +101,7 @@ Optional:
 - `custom_header_name` (String) Header name used when `auth_type` is `custom`.
 - `custom_header_value` (String, Sensitive) Header value used when `auth_type` is `custom`.
 - `enabled` (Boolean) Whether the webhook is called. Defaults to `true`.
-- `headers` (Map of String) Extra headers sent with every call, keyed by header name.
+- `headers` (Map of String, Sensitive) Extra headers sent with every call, keyed by header name. Sensitive, since extra headers often carry API keys.
 - `method` (String) HTTP method: `GET`, `POST`, `PUT` or `PATCH`. Defaults to `POST`.
 
 ## Import

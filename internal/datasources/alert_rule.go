@@ -75,7 +75,7 @@ func (d *AlertRuleDataSource) Schema(_ context.Context, _ datasource.SchemaReque
 				"basic_credentials":   schema.StringAttribute{Description: "`username:password` basic credentials.", Computed: true, Sensitive: true},
 				"custom_header_name":  schema.StringAttribute{Description: "Custom auth header name.", Computed: true},
 				"custom_header_value": schema.StringAttribute{Description: "Custom auth header value.", Computed: true, Sensitive: true},
-				"headers":             schema.MapAttribute{Description: "Extra headers, keyed by header name.", Computed: true, ElementType: types.StringType},
+				"headers":             schema.MapAttribute{Description: "Extra headers, keyed by header name.", Computed: true, Sensitive: true, ElementType: types.StringType},
 				"body_template":       schema.StringAttribute{Description: "Custom request body template, null when the default payload is used.", Computed: true},
 			},
 		},
@@ -137,7 +137,7 @@ func alertRuleDetailToModel(ctx context.Context, got *client.AlertRuleDetail, di
 	}
 
 	m := AlertRuleDataSourceModel{
-		AlertRuleItemModel: alertRuleItemFromClient(got.AlertRule, diags),
+		AlertRuleItemModel: alertRuleItemFromClient(ctx, got.AlertRule, diags),
 		WebhookActions:     []AlertRuleWebhookModel{},
 	}
 	var d diag.Diagnostics
@@ -170,12 +170,12 @@ func alertRuleDetailToModel(ctx context.Context, got *client.AlertRuleDetail, di
 			if cfg.Method != nil && *cfg.Method != "" {
 				wm.Method = types.StringValue(*cfg.Method)
 			}
-			wm.BearerToken = tfconv.StringFromPtr(cfg.BearerToken)
-			wm.BasicCredentials = tfconv.StringFromPtr(cfg.BasicCredentials)
-			wm.CustomHeaderName = tfconv.StringFromPtr(cfg.CustomHeaderName)
-			wm.CustomHeaderValue = tfconv.StringFromPtr(cfg.CustomHeaderValue)
+			wm.BearerToken = tfconv.StringFromNonEmptyPtr(cfg.BearerToken)
+			wm.BasicCredentials = tfconv.StringFromNonEmptyPtr(cfg.BasicCredentials)
+			wm.CustomHeaderName = tfconv.StringFromNonEmptyPtr(cfg.CustomHeaderName)
+			wm.CustomHeaderValue = tfconv.StringFromNonEmptyPtr(cfg.CustomHeaderValue)
 			if cfg.UseBodyTemplate != nil && *cfg.UseBodyTemplate {
-				wm.BodyTemplate = tfconv.StringFromPtr(cfg.BodyTemplate)
+				wm.BodyTemplate = tfconv.StringFromNonEmptyPtr(cfg.BodyTemplate)
 			}
 			headers := map[string]string{}
 			for _, h := range cfg.Headers {

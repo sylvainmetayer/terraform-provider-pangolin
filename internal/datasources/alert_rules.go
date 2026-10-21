@@ -133,14 +133,14 @@ func (d *AlertRulesDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		AlertRules: []AlertRuleItemModel{},
 	}
 	for _, r := range rules {
-		state.AlertRules = append(state.AlertRules, alertRuleItemFromClient(r, &resp.Diagnostics))
+		state.AlertRules = append(state.AlertRules, alertRuleItemFromClient(ctx, r, &resp.Diagnostics))
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 // alertRuleItemFromClient maps a [client.AlertRule] to its TF model.
-func alertRuleItemFromClient(r client.AlertRule, diags *diag.Diagnostics) AlertRuleItemModel {
+func alertRuleItemFromClient(ctx context.Context, r client.AlertRule, diags *diag.Diagnostics) AlertRuleItemModel {
 	return AlertRuleItemModel{
 		ID:              types.Int64Value(int64(r.AlertRuleID)),
 		Name:            types.StringValue(r.Name),
@@ -150,20 +150,20 @@ func alertRuleItemFromClient(r client.AlertRule, diags *diag.Diagnostics) AlertR
 		LastTriggeredAt: tfconv.Int64FromInt64Ptr(r.LastTriggeredAt),
 		CreatedAt:       types.Int64Value(r.CreatedAt),
 		UpdatedAt:       types.Int64Value(r.UpdatedAt),
-		SiteIDs:         alertRuleIDList(r.SiteIDs, diags),
-		HealthCheckIDs:  alertRuleIDList(r.HealthCheckIDs, diags),
-		ResourceIDs:     alertRuleIDList(r.ResourceIDs, diags),
+		SiteIDs:         alertRuleIDList(ctx, r.SiteIDs, diags),
+		HealthCheckIDs:  alertRuleIDList(ctx, r.HealthCheckIDs, diags),
+		ResourceIDs:     alertRuleIDList(ctx, r.ResourceIDs, diags),
 	}
 }
 
 // alertRuleIDList converts server IDs to a list of int64, empty (not
 // null) when the server sends none.
-func alertRuleIDList(ids []int, diags *diag.Diagnostics) types.List {
+func alertRuleIDList(ctx context.Context, ids []int, diags *diag.Diagnostics) types.List {
 	vals := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		vals = append(vals, int64(id))
 	}
-	lv, d := types.ListValueFrom(context.Background(), types.Int64Type, vals)
+	lv, d := types.ListValueFrom(ctx, types.Int64Type, vals)
 	diags.Append(d...)
 	return lv
 }

@@ -68,7 +68,7 @@ Read-Only:
 - `custom_header_name` (String) Custom auth header name.
 - `custom_header_value` (String, Sensitive) Custom auth header value.
 - `enabled` (Boolean) Whether the webhook is called.
-- `headers` (Map of String) Extra headers, keyed by header name.
+- `headers` (Map of String, Sensitive) Extra headers, keyed by header name.
 - `id` (Number) Numeric webhook action ID.
 - `last_sent_at` (Number) Last successful call (epoch milliseconds), null if never.
 - `method` (String) HTTP method (`POST` when the config does not set one).

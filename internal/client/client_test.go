@@ -4447,6 +4447,23 @@ func TestCreateAlertRule_PathMethodAndEmptyArrays(t *testing.T) {
 	}
 }
 
+func TestCreateAlertRule_NotRetriedOnServerError(t *testing.T) {
+	disableRetryBackoff(t)
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeEnvelope(t, w, http.StatusBadGateway, nil)
+	})
+	_, err := c.CreateAlertRule(context.Background(), &AlertRuleRequest{Name: "x", EventType: "site_offline", AllSites: true})
+	if !errors.Is(err, ErrServer) {
+		t.Errorf("err = %v, want ErrServer", err)
+	}
+	// A replayed create could leave a duplicate rule on the server.
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
 func TestGetAlertRule_DecodesAndSortsWebhooks(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/org/test-org/alert-rule/17" {

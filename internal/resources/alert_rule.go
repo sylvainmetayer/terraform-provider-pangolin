@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
@@ -325,8 +326,10 @@ func (r *AlertRuleResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 							},
 						},
 						"headers": schema.MapAttribute{
-							Description: "Extra headers sent with every call, keyed by header name.",
+							Description: "Extra headers sent with every call, keyed by header name. " +
+								"Sensitive, since extra headers often carry API keys.",
 							Optional:    true,
+							Sensitive:   true,
 							ElementType: types.StringType,
 						},
 						"body_template": schema.StringAttribute{
@@ -444,32 +447,31 @@ func validateAlertRuleWebhooks(ctx context.Context, config AlertRuleResourceMode
 	if diags.HasError() {
 		return
 	}
-	required := map[string]string{
-		"bearer": "bearer_token",
-		"basic":  "basic_credentials",
-		"custom": "custom_header_name",
+	type credential struct {
+		name  string
+		value types.String
 	}
 	for i, a := range actions {
 		if a.AuthType.IsNull() || a.AuthType.IsUnknown() {
 			continue
 		}
-		attrName, ok := required[a.AuthType.ValueString()]
-		if !ok {
-			continue
+		var required []credential
+		switch a.AuthType.ValueString() {
+		case "bearer":
+			required = []credential{{"bearer_token", a.BearerToken}}
+		case "basic":
+			required = []credential{{"basic_credentials", a.BasicCredentials}}
+		case "custom":
+			// The server accepts a custom header without a value but then
+			// sends it empty, so every call fails authentication.
+			required = []credential{{"custom_header_name", a.CustomHeaderName}, {"custom_header_value", a.CustomHeaderValue}}
 		}
-		var v types.String
-		switch attrName {
-		case "bearer_token":
-			v = a.BearerToken
-		case "basic_credentials":
-			v = a.BasicCredentials
-		default:
-			v = a.CustomHeaderName
-		}
-		if v.IsNull() {
-			diags.AddAttributeError(path.Root("webhook_actions").AtListIndex(i).AtName(attrName),
-				"Missing webhook credential",
-				fmt.Sprintf("`%s` is required when `auth_type` is `%s`.", attrName, a.AuthType.ValueString()))
+		for _, c := range required {
+			if c.value.IsNull() {
+				diags.AddAttributeError(path.Root("webhook_actions").AtListIndex(i).AtName(c.name),
+					"Missing webhook credential",
+					fmt.Sprintf("`%s` is required when `auth_type` is `%s`.", c.name, a.AuthType.ValueString()))
+			}
 		}
 	}
 }
@@ -495,6 +497,11 @@ func (r *AlertRuleResource) Create(ctx context.Context, req resource.CreateReque
 
 	got, err := r.client.GetAlertRule(ctx, id)
 	if err != nil {
+		// Keep the ID in state so the rule is not orphaned: Terraform
+		// marks it tainted and replaces it on the next apply.
+		plan.ID = types.Int64Value(int64(id))
+		plan.CreatedAt = types.Int64Null()
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		resp.Diagnostics.AddError("Failed to read alert rule after create", err.Error())
 		return
 	}
@@ -516,6 +523,13 @@ func (r *AlertRuleResource) Read(ctx context.Context, req resource.ReadRequest, 
 	got, err := r.client.GetAlertRule(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
+			// A 404 also comes from a Community Edition server, which has
+			// no alert rule routes at all. Only drop the rule from state
+			// when the list route answers.
+			if _, listErr := r.client.ListAlertRules(ctx, client.AlertRuleListQuery{}); listErr != nil {
+				resp.Diagnostics.AddError("Failed to read alert rule", alertRuleErrorDetail(listErr))
+				return
+			}
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -584,29 +598,9 @@ func (r *AlertRuleResource) ImportState(ctx context.Context, req resource.Import
 		return
 	}
 
-	got, err := r.client.GetAlertRule(ctx, int(id))
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to import alert rule", err.Error())
-		return
-	}
-	prior := AlertRuleResourceModel{
-		SiteIDs:         types.SetNull(types.Int64Type),
-		HealthCheckIDs:  types.SetNull(types.Int64Type),
-		ResourceIDs:     types.SetNull(types.Int64Type),
-		UserIDs:         types.SetNull(types.StringType),
-		RoleIDs:         types.SetNull(types.Int64Type),
-		Emails:          types.SetNull(types.StringType),
-		WebhookActions:  types.ListNull(types.ObjectType{AttrTypes: alertWebhookActionAttrTypes}),
-		AllSites:        types.BoolNull(),
-		AllHealthChecks: types.BoolNull(),
-		AllResources:    types.BoolNull(),
-	}
-	state, diags := alertRuleToModel(ctx, got, prior)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	// Read fills the rest: with a null prior it infers the all_* flags
+	// and keeps unset collections null.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
 // alertRuleErrorDetail adds a version hint to a 404 on write: the
@@ -781,19 +775,34 @@ func alertWebhookActionsToList(ctx context.Context, actions []client.AlertWebhoo
 			Headers:           types.MapNull(types.StringType),
 			BodyTemplate:      types.StringNull(),
 		}
-		if cfg := a.Config; cfg != nil {
+		cfg := a.Config
+		if cfg == nil && i < len(priorActions) && priorActions[i].URL.ValueString() == a.WebhookURL {
+			// The server returns a null config when it cannot decrypt
+			// it. The provider always writes one, so keep the prior
+			// values rather than reporting the defaults.
+			p := priorActions[i]
+			m.Method, m.AuthType, m.Headers, m.BodyTemplate = p.Method, p.AuthType, p.Headers, p.BodyTemplate
+			m.BearerToken, m.BasicCredentials = p.BearerToken, p.BasicCredentials
+			m.CustomHeaderName, m.CustomHeaderValue = p.CustomHeaderName, p.CustomHeaderValue
+			if p.AuthType.ValueString() != "none" || !p.Headers.IsNull() || !p.BodyTemplate.IsNull() {
+				diags.AddWarning("Webhook config not readable",
+					fmt.Sprintf("Pangolin returned no config for webhook %q (it could not decrypt it, for example after "+
+						"a server secret change). The values from the previous state are kept; check the webhook in Pangolin.", a.WebhookURL))
+			}
+		}
+		if cfg != nil {
 			if cfg.AuthType != "" {
 				m.AuthType = types.StringValue(cfg.AuthType)
 			}
 			if cfg.Method != nil && *cfg.Method != "" {
 				m.Method = types.StringValue(*cfg.Method)
 			}
-			m.BearerToken = nonEmptyString(cfg.BearerToken)
-			m.BasicCredentials = nonEmptyString(cfg.BasicCredentials)
-			m.CustomHeaderName = nonEmptyString(cfg.CustomHeaderName)
-			m.CustomHeaderValue = nonEmptyString(cfg.CustomHeaderValue)
+			m.BearerToken = tfconv.StringFromNonEmptyPtr(cfg.BearerToken)
+			m.BasicCredentials = tfconv.StringFromNonEmptyPtr(cfg.BasicCredentials)
+			m.CustomHeaderName = tfconv.StringFromNonEmptyPtr(cfg.CustomHeaderName)
+			m.CustomHeaderValue = tfconv.StringFromNonEmptyPtr(cfg.CustomHeaderValue)
 			if cfg.UseBodyTemplate != nil && *cfg.UseBodyTemplate {
-				m.BodyTemplate = nonEmptyString(cfg.BodyTemplate)
+				m.BodyTemplate = tfconv.StringFromNonEmptyPtr(cfg.BodyTemplate)
 			}
 			if len(cfg.Headers) > 0 {
 				headers := map[string]attr.Value{}
@@ -815,15 +824,6 @@ func alertWebhookActionsToList(ctx context.Context, actions []client.AlertWebhoo
 	lv, d := types.ListValueFrom(ctx, objType, models)
 	diags.Append(d...)
 	return lv
-}
-
-// nonEmptyString maps nil and "" to null. The Pangolin UI drops empty
-// credentials from the config, so "" never round-trips.
-func nonEmptyString(p *string) types.String {
-	if p == nil || *p == "" {
-		return types.StringNull()
-	}
-	return types.StringValue(*p)
 }
 
 // int64SetToInts converts a set of int64 into a sorted []int. Null and
