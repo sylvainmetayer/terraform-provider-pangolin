@@ -33,6 +33,21 @@ resource "pangolin_resource" "web_advanced" {
   ]
 }
 
+# Response headers (Pangolin >= 1.24 only: older servers reject the
+# key, so leave `response_headers` unset there). Removing either list
+# from the config clears it on the server.
+resource "pangolin_resource" "web_hardened" {
+  name      = "public-app"
+  subdomain = "public"
+  domain_id = data.pangolin_domains.all.domains[0].domain_id
+  mode      = "http"
+
+  response_headers = [
+    { name = "Strict-Transport-Security", value = "max-age=63072000" },
+    { name = "X-Content-Type-Options", value = "nosniff" },
+  ]
+}
+
 # ---------------------------------------------------------------------
 # SSH bastion - a `mode = "tcp"` resource fronted by the Pangolin
 # auth-daemon on the edge. `pam_mode = "push"` triggers a
