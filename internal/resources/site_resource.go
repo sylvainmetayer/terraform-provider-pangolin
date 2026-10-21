@@ -404,9 +404,11 @@ func (r *SitePrivateResource) ImportState(ctx context.Context, req resource.Impo
 // createSiteResourceErrorDetail adds a version hint to a create error
 // in gateway mode: a pre-1.24 server rejects the mode itself with a
 // generic 400 ("Invalid option: expected one of ... at \"mode\"").
+// Other 400s (duplicate name, bad site_id) name another field and get
+// no hint.
 func createSiteResourceErrorDetail(mode string, err error) string {
 	detail := err.Error()
-	if mode == siteResourceModeGateway && strings.Contains(detail, "(status 400)") {
+	if mode == siteResourceModeGateway && strings.Contains(detail, "(status 400)") && strings.Contains(detail, `"mode"`) {
 		detail += "\n\n`mode = \"gateway\"` requires Pangolin 1.24 or later: an older server " +
 			"rejects the mode with a validation error on `mode`."
 	}
@@ -483,6 +485,9 @@ func buildUpdateSiteResourceRequest(plan SitePrivateResourceModel) *client.Updat
 // apply would otherwise end in "Provider produced inconsistent result".
 // It also rejects, in gateway mode, the attributes that mode has no
 // use for (alias, domain_id, subdomain, scheme, destination_port).
+// An unknown `mode` is skipped here: Terraform validates the config
+// again with the final values when it plans the resource, so a mode
+// known only at apply still gets these errors before any API call.
 func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var cfg SitePrivateResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)

@@ -596,6 +596,11 @@ func TestCreateSiteResourceErrorDetail(t *testing.T) {
 	if got := createSiteResourceErrorDetail("host", old); got != old.Error() {
 		t.Errorf("host 400: %q", got)
 	}
+	// A 1.24 server refusing another field: no upgrade hint.
+	otherField := errors.New(`API error (status 400): Validation error: Invalid input: expected number, received string at "siteIds[0]"`)
+	if got := createSiteResourceErrorDetail("gateway", otherField); got != otherField.Error() {
+		t.Errorf("gateway 400 on another field: %q", got)
+	}
 	conflict := errors.New("API error (status 409): Alias already in use by another site resource")
 	if got := createSiteResourceErrorDetail("gateway", conflict); got != conflict.Error() {
 		t.Errorf("gateway 409: %q", got)
