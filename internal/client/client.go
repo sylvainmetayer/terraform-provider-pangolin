@@ -163,9 +163,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return lastResp, lastErr
 }
 
-// doRequestNoRetry is doRequest without the retry loop, for
-// non-idempotent calls sent with a method doRequest would retry
-// (e.g. a create exposed as PUT).
+// doRequestNoRetry performs a single attempt with no retry, whatever the
+// method. Pangolin creates most objects with PUT, which doRequest
+// retries: replaying a create whose response was lost (connection reset,
+// proxy 502) would leave a duplicate on the server.
 func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
 	var bodyBytes []byte
 	if body != nil {
