@@ -140,7 +140,7 @@ resource "pangolin_resource_role" "app_devs" {
 
 # Expose a TCP service via the VPN (private site resource)
 resource "pangolin_site_resource" "postgres" {
-  site_id        = pangolin_site.homelab.id
+  site_ids       = [pangolin_site.homelab.id]
   name           = "postgres"
   mode           = "host"
   destination    = "db.internal"
@@ -150,13 +150,12 @@ resource "pangolin_site_resource" "postgres" {
 
 # SSH bastion via PAM (Pangolin 1.19+)
 resource "pangolin_site_resource" "ssh_bastion" {
-  site_id        = pangolin_site.homelab.id
-  name           = "ssh-bastion"
-  mode           = "host"
-  destination    = "bastion.internal"
-  alias          = "bastion.local"
-  tcp_port_range = "22"
-  pam_mode       = "push"
+  site_ids    = [pangolin_site.homelab.id]
+  name        = "ssh-bastion"
+  mode        = "ssh"
+  destination = "bastion.internal"
+  alias       = "bastion.local"
+  pam_mode    = "push"
 }
 ```
 

@@ -44,13 +44,14 @@ Read-Only:
 - `enabled` (Boolean) Whether the resource is enabled.
 - `full_domain` (String) The full FQDN of the resource. Null when unset.
 - `id` (Number) The numeric site resource ID.
-- `mode` (String) The mode: `host`, `cidr`, `http` or `gateway`.
+- `mode` (String) The mode: `host`, `cidr`, `http`, `ssh`, `inference` or `gateway`.
 - `name` (String) The resource name.
 - `network_id` (Number) The numeric network ID.
 - `nice_id` (String) The human-readable ID.
 - `proxy_port` (Number) The proxy-facing port. HTTP-mode resources only; null otherwise.
 - `scheme` (String) The protocol scheme. HTTP-mode resources only; null otherwise.
-- `site_id` (Number) The parent site ID (first entry of the upstream `siteIds` array).
+- `site_id` (Number) The parent site ID (first entry of `site_ids`).
+- `site_ids` (List of Number) The sites the resource is reachable through (empty for `inference` resources).
 - `ssl` (Boolean) Whether SSL is terminated by the proxy.
 - `subdomain` (String) The configured subdomain. Null when unset.
 - `tcp_port_range` (String) TCP port range.

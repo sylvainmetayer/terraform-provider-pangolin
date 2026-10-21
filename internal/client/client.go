@@ -1010,8 +1010,12 @@ type SiteResource struct {
 // observation so far).
 type CreateSiteResourceRequest struct {
 	Name           string   `json:"name"`
-	SiteID         int      `json:"siteId"`
+	NiceID         string   `json:"niceId,omitempty"`
+	SiteID         int      `json:"siteId,omitempty"`
+	SiteIDs        []int    `json:"siteIds,omitempty"`
 	Mode           string   `json:"mode"`
+	SSL            *bool    `json:"ssl,omitempty"`
+	AuthDaemonPort int      `json:"authDaemonPort,omitempty"`
 	Destination    string   `json:"destination,omitempty"`
 	Alias          string   `json:"alias,omitempty"`
 	TCPPortRange   string   `json:"tcpPortRangeString,omitempty"`
@@ -1028,6 +1032,60 @@ type CreateSiteResourceRequest struct {
 	Subdomain       string `json:"subdomain,omitempty"`
 	Scheme          string `json:"scheme,omitempty"`
 	DestinationPort int    `json:"destinationPort,omitempty"`
+
+	// AIProviders attaches AI providers to an `inference` resource
+	// (refused in the other modes). The server attaches them in inherit
+	// mode, enabled.
+	AIProviders []SiteResourceAIProviderInput `json:"aiProviders,omitempty"`
+}
+
+// SiteResourceAIProviderInput is one AI provider attachment of an
+// `inference` site resource, as sent on create and on
+// POST /site-resource/{id}/ai-providers. AccessMode (`inherit` or
+// `select`) and Enabled default server-side to `inherit` and true.
+type SiteResourceAIProviderInput struct {
+	ProviderID int    `json:"providerId"`
+	AccessMode string `json:"accessMode,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+}
+
+// SiteResourceAIProvider is one entry of
+// GET /site-resource/{id}/ai-providers.
+type SiteResourceAIProvider struct {
+	ProviderID      int    `json:"providerId"`
+	NiceID          string `json:"niceId"`
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	Enabled         bool   `json:"enabled"`
+	ProviderEnabled bool   `json:"providerEnabled"`
+	AccessMode      string `json:"accessMode"`
+}
+
+// ListSiteResourceAIProviders returns the AI providers attached to an
+// `inference` site resource.
+func (c *Client) ListSiteResourceAIProviders(ctx context.Context, siteResourceID int) ([]SiteResourceAIProvider, error) {
+	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/site-resource/%d/ai-providers", siteResourceID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Providers []SiteResourceAIProvider `json:"providers"`
+	}
+	if err := json.Unmarshal(resp.Data, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse site resource AI providers: %w", err)
+	}
+	return wrapper.Providers, nil
+}
+
+// SetSiteResourceAIProviders replaces the AI provider attachments of an
+// `inference` site resource (POST /site-resource/{id}/ai-providers).
+func (c *Client) SetSiteResourceAIProviders(ctx context.Context, siteResourceID int, providers []SiteResourceAIProviderInput) error {
+	if providers == nil {
+		providers = []SiteResourceAIProviderInput{}
+	}
+	body := map[string]any{"providers": providers}
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/site-resource/%d/ai-providers", siteResourceID), body)
+	return err
 }
 
 // CreateSiteResource creates a new private site resource.
@@ -1491,14 +1549,25 @@ func (c *Client) UpdateResource(ctx context.Context, resourceID int, req *Update
 // / `_user` / `_client` or in the UI, so an update of the resource itself
 // leaves them nil.
 //
-// `Mode` is only sent for `gateway` resources: the server re-applies
-// its forced gateway values (destination, port ranges, ICMP) only
-// when the body names the mode, and `Destination` stays empty
-// (omitted) for them. Mode itself is immutable in the provider.
+// `Mode` is only sent for the modes whose values the server forces
+// (`gateway`, `ssh`, `inference`): it re-applies them (destination for
+// gateway, port ranges, ICMP) only when the body names the mode.
+// `Destination` stays empty (omitted) for gateway. Mode itself is
+// immutable in the provider.
+//
+// The site attachment is sent as `SiteID` when the resource has exactly
+// one site (accepted by every server version) and as `SiteIDs` when it
+// has several (1.24+; the list replaces the current attachments). Both
+// stay empty for `inference` resources, which have no site.
 type UpdateSiteResourceRequest struct {
 	Name           string    `json:"name"`
-	SiteID         int       `json:"siteId"`
+	NiceID         string    `json:"niceId,omitempty"`
+	SiteID         int       `json:"siteId,omitempty"`
+	SiteIDs        []int     `json:"siteIds,omitempty"`
 	Mode           string    `json:"mode,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
+	SSL            *bool     `json:"ssl,omitempty"`
+	AuthDaemonPort int       `json:"authDaemonPort,omitempty"`
 	Destination    string    `json:"destination,omitempty"`
 	Alias          string    `json:"alias,omitempty"`
 	TCPPortRange   *string   `json:"tcpPortRangeString,omitempty"`

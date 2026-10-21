@@ -19,29 +19,30 @@ type SiteResourcesDataSource struct {
 
 // SiteResourceItemModel describes a single site resource in the data source.
 type SiteResourceItemModel struct {
-	ID               types.Int64  `tfsdk:"id"`
-	NiceID           types.String `tfsdk:"nice_id"`
-	SiteID           types.Int64  `tfsdk:"site_id"`
-	Name             types.String `tfsdk:"name"`
-	Mode             types.String `tfsdk:"mode"`
-	Destination      types.String `tfsdk:"destination"`
-	Alias            types.String `tfsdk:"alias"`
-	TCPPortRange     types.String `tfsdk:"tcp_port_range"`
-	UDPPortRange     types.String `tfsdk:"udp_port_range"`
-	DisableICMP      types.Bool   `tfsdk:"disable_icmp"`
-	AuthDaemonMode   types.String `tfsdk:"auth_daemon_mode"`
-	AuthDaemonPort   types.Int64  `tfsdk:"auth_daemon_port"`
-	Enabled          types.Bool   `tfsdk:"enabled"`
-	SSL              types.Bool   `tfsdk:"ssl"`
-	NetworkID        types.Int64  `tfsdk:"network_id"`
-	DefaultNetworkID types.Int64  `tfsdk:"default_network_id"`
-	Scheme           types.String `tfsdk:"scheme"`
-	ProxyPort        types.Int64  `tfsdk:"proxy_port"`
-	DestinationPort  types.Int64  `tfsdk:"destination_port"`
-	AliasAddress     types.String `tfsdk:"alias_address"`
-	DomainID         types.String `tfsdk:"domain_id"`
-	Subdomain        types.String `tfsdk:"subdomain"`
-	FullDomain       types.String `tfsdk:"full_domain"`
+	ID               types.Int64   `tfsdk:"id"`
+	NiceID           types.String  `tfsdk:"nice_id"`
+	SiteID           types.Int64   `tfsdk:"site_id"`
+	SiteIDs          []types.Int64 `tfsdk:"site_ids"`
+	Name             types.String  `tfsdk:"name"`
+	Mode             types.String  `tfsdk:"mode"`
+	Destination      types.String  `tfsdk:"destination"`
+	Alias            types.String  `tfsdk:"alias"`
+	TCPPortRange     types.String  `tfsdk:"tcp_port_range"`
+	UDPPortRange     types.String  `tfsdk:"udp_port_range"`
+	DisableICMP      types.Bool    `tfsdk:"disable_icmp"`
+	AuthDaemonMode   types.String  `tfsdk:"auth_daemon_mode"`
+	AuthDaemonPort   types.Int64   `tfsdk:"auth_daemon_port"`
+	Enabled          types.Bool    `tfsdk:"enabled"`
+	SSL              types.Bool    `tfsdk:"ssl"`
+	NetworkID        types.Int64   `tfsdk:"network_id"`
+	DefaultNetworkID types.Int64   `tfsdk:"default_network_id"`
+	Scheme           types.String  `tfsdk:"scheme"`
+	ProxyPort        types.Int64   `tfsdk:"proxy_port"`
+	DestinationPort  types.Int64   `tfsdk:"destination_port"`
+	AliasAddress     types.String  `tfsdk:"alias_address"`
+	DomainID         types.String  `tfsdk:"domain_id"`
+	Subdomain        types.String  `tfsdk:"subdomain"`
+	FullDomain       types.String  `tfsdk:"full_domain"`
 }
 
 // SiteResourcesDataSourceModel describes the data source data model.
@@ -69,9 +70,10 @@ func (d *SiteResourcesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"id":                 schema.Int64Attribute{Description: "The numeric site resource ID.", Computed: true},
 						"nice_id":            schema.StringAttribute{Description: "The human-readable ID.", Computed: true},
-						"site_id":            schema.Int64Attribute{Description: "The parent site ID (first entry of the upstream `siteIds` array).", Computed: true},
+						"site_id":            schema.Int64Attribute{Description: "The parent site ID (first entry of `site_ids`).", Computed: true},
+						"site_ids":           schema.ListAttribute{Description: "The sites the resource is reachable through (empty for `inference` resources).", ElementType: types.Int64Type, Computed: true},
 						"name":               schema.StringAttribute{Description: "The resource name.", Computed: true},
-						"mode":               schema.StringAttribute{Description: "The mode: `host`, `cidr`, `http` or `gateway`.", Computed: true},
+						"mode":               schema.StringAttribute{Description: "The mode: `host`, `cidr`, `http`, `ssh`, `inference` or `gateway`.", Computed: true},
 						"destination":        schema.StringAttribute{Description: "The destination.", Computed: true},
 						"alias":              schema.StringAttribute{Description: "The internal DNS alias.", Computed: true},
 						"tcp_port_range":     schema.StringAttribute{Description: "TCP port range.", Computed: true},
@@ -141,6 +143,10 @@ func (d *SiteResourcesDataSource) Read(ctx context.Context, _ datasource.ReadReq
 			DomainID:         tfconv.StringFromPtr(sr.DomainID),
 			Subdomain:        tfconv.StringFromPtr(sr.Subdomain),
 			FullDomain:       tfconv.StringFromPtr(sr.FullDomain),
+		}
+		item.SiteIDs = make([]types.Int64, 0, len(sr.SiteIDs))
+		for _, id := range sr.SiteIDs {
+			item.SiteIDs = append(item.SiteIDs, types.Int64Value(int64(id)))
 		}
 		if len(sr.SiteIDs) > 0 {
 			item.SiteID = types.Int64Value(int64(sr.SiteIDs[0]))
