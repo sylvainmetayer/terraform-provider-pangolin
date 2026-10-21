@@ -1559,9 +1559,15 @@ func (c *Client) UpdateResource(ctx context.Context, resourceID int, req *Update
 // immutable in the provider.
 //
 // The site attachment is sent as `SiteID` when the resource has exactly
-// one site (accepted by every server version) and as `SiteIDs` when it
-// has several (1.24+; the list replaces the current attachments). Both
-// stay empty for `inference` resources, which have no site.
+// one site and as `SiteIDs` when it has several. `siteId` is accepted up
+// to 1.17 and again from 1.19 (on 1.24 it replaces every attachment with
+// that one site); `siteIds` from 1.18, where the strict schema requires
+// it and refuses `siteId`. Both stay empty for `inference` resources,
+// which have no site.
+//
+// `NiceID`, `SSL`, `Enabled` and `AuthDaemonPort` are left out unless
+// the caller sets them: older strict schemas refuse unknown keys (`ssl`
+// arrived in 1.18, `niceId` in 1.17).
 type UpdateSiteResourceRequest struct {
 	Name           string    `json:"name"`
 	NiceID         string    `json:"niceId,omitempty"`

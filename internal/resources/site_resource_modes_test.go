@@ -413,7 +413,7 @@ func TestSiteResourceCreate_DisabledAndInference(t *testing.T) {
 		t.Fatalf("plan: %v", d)
 	}
 	resp := resource.CreateResponse{State: siteResourceEmptyState(t)}
-	(&SitePrivateResource{client: c}).Create(ctx, resource.CreateRequest{Plan: tfPlan}, &resp)
+	(&SitePrivateResource{client: c}).Create(ctx, resource.CreateRequest{Plan: tfPlan, Config: tfsdk.Config{Schema: s, Raw: tfPlan.Raw}}, &resp)
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("Create: %v", resp.Diagnostics)
 	}
@@ -469,7 +469,7 @@ func TestSiteResourceUpdate_AIProvidersKeepAccessMode(t *testing.T) {
 	tfState.Set(ctx, &prior)
 	tfPlan.Set(ctx, &planned)
 	resp := resource.UpdateResponse{State: tfState}
-	(&SitePrivateResource{client: c}).Update(ctx, resource.UpdateRequest{Plan: tfPlan, State: tfState}, &resp)
+	(&SitePrivateResource{client: c}).Update(ctx, resource.UpdateRequest{Plan: tfPlan, State: tfState, Config: tfsdk.Config{Schema: s, Raw: tfPlan.Raw}}, &resp)
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("Update: %v", resp.Diagnostics)
 	}

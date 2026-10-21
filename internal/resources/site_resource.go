@@ -293,7 +293,8 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"enabled": schema.BoolAttribute{
 				Description: "Whether the resource is enabled. New resources are enabled; setting `false` disables the " +
-					"resource right after creating it (the create endpoint has no such field).",
+					"resource right after creating it (the create endpoint has no such field). Removing the attribute " +
+					"keeps the current value: set `enabled = true` to re-enable a disabled resource.",
 				Optional: true,
 				Computed: true,
 				PlanModifiers: []planmodifier.Bool{
@@ -423,11 +424,14 @@ func (r *SitePrivateResource) Create(ctx context.Context, req resource.CreateReq
 
 	// The create endpoint has no `enabled` field: disable it afterwards.
 	if !plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() && !plan.Enabled.ValueBool() {
+		var cfg SitePrivateResourceModel
+		resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
 		updateReq, diags := buildUpdateSiteResourceRequest(ctx, &plan)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
+		omitUnchangedOptionalKeys(updateReq, plan, cfg, nil)
 		updated, err := r.client.UpdateSiteResource(ctx, siteRes.SiteResourceID, updateReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to disable site resource after creation", err.Error())
@@ -436,8 +440,10 @@ func (r *SitePrivateResource) Create(ctx context.Context, req resource.CreateReq
 		siteRes = updated
 	}
 
+	var cfgProviders types.Set
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("ai_provider_ids"), &cfgProviders)...)
 	hydrateSiteResourceState(&plan, siteRes)
-	resp.Diagnostics.Append(r.readAIProviders(ctx, &plan)...)
+	resp.Diagnostics.Append(r.readAIProviders(ctx, &plan, cfgProviders.IsNull())...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -463,7 +469,7 @@ func (r *SitePrivateResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	hydrateSiteResourceState(&state, siteRes)
-	resp.Diagnostics.Append(r.readAIProviders(ctx, &state)...)
+	resp.Diagnostics.Append(r.readAIProviders(ctx, &state, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -484,11 +490,14 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	var cfg SitePrivateResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
 	updateReq, diags := buildUpdateSiteResourceRequest(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	omitUnchangedOptionalKeys(updateReq, plan, cfg, &state)
 	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site resource", err.Error())
@@ -496,14 +505,20 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	if plan.Mode.ValueString() == siteResourceModeInference && !plan.AIProviderIDs.IsUnknown() && !plan.AIProviderIDs.Equal(state.AIProviderIDs) {
-		resp.Diagnostics.Append(r.setAIProviders(ctx, int(plan.ID.ValueInt64()), plan.AIProviderIDs)...)
-		if resp.Diagnostics.HasError() {
+		if d := r.setAIProviders(ctx, int(plan.ID.ValueInt64()), plan.AIProviderIDs); d.HasError() {
+			// The settings update went through: save it, with the
+			// attachments as they were, so state never records providers
+			// that were not applied.
+			resp.Diagnostics.Append(d...)
+			hydrateSiteResourceState(&plan, siteRes)
+			plan.AIProviderIDs = state.AIProviderIDs
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
 	}
 
 	hydrateSiteResourceState(&plan, siteRes)
-	resp.Diagnostics.Append(r.readAIProviders(ctx, &plan)...)
+	resp.Diagnostics.Append(r.readAIProviders(ctx, &plan, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -513,8 +528,12 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 
 // readAIProviders fills ai_provider_ids from the server for an inference
 // resource, and nulls it for the other modes (which have none, and whose
-// API key may lack the AI provider actions).
-func (r *SitePrivateResource) readAIProviders(ctx context.Context, m *SitePrivateResourceModel) diag.Diagnostics {
+// API key may lack the AI provider actions). A key that may not list the
+// attachments (403) only gets a warning and the last known value, as
+// does any failure when the attachments are not managed (unmanaged is
+// only known on create, from the config): neither should fail the
+// whole create, refresh or import.
+func (r *SitePrivateResource) readAIProviders(ctx context.Context, m *SitePrivateResourceModel, unmanaged bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if m.Mode.ValueString() != siteResourceModeInference {
 		m.AIProviderIDs = types.SetNull(types.Int64Type)
@@ -522,7 +541,16 @@ func (r *SitePrivateResource) readAIProviders(ctx context.Context, m *SitePrivat
 	}
 	providers, err := r.client.ListSiteResourceAIProviders(ctx, int(m.ID.ValueInt64()))
 	if err != nil {
-		diags.AddError("Failed to read site resource AI providers", err.Error())
+		if !errors.Is(err, client.ErrForbidden) && !unmanaged {
+			diags.AddError("Failed to read site resource AI providers", err.Error())
+			return diags
+		}
+		diags.AddAttributeWarning(path.Root("ai_provider_ids"), "AI provider attachments not read",
+			"Listing the AI providers of this site resource failed, so ai_provider_ids keeps its last known value. "+
+				"Give the API key the action that lists site resource AI providers to track them.\n\n"+err.Error())
+		if m.AIProviderIDs.IsNull() || m.AIProviderIDs.IsUnknown() {
+			m.AIProviderIDs = siteResourceIntSet(nil)
+		}
 		return diags
 	}
 	ids := make([]int, 0, len(providers))
@@ -596,7 +624,7 @@ func (r *SitePrivateResource) ImportState(ctx context.Context, req resource.Impo
 
 	state := SitePrivateResourceModel{ID: types.Int64Value(int64(siteRes.SiteResourceID))}
 	hydrateSiteResourceState(&state, siteRes)
-	resp.Diagnostics.Append(r.readAIProviders(ctx, &state)...)
+	resp.Diagnostics.Append(r.readAIProviders(ctx, &state, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -657,7 +685,7 @@ func buildCreateSiteResourceRequest(ctx context.Context, plan SitePrivateResourc
 		req.UDPPortRange = nil
 		req.DisableICMP = nil
 	}
-	if plan.Mode.ValueString() == siteResourceModeInference && !plan.AIProviderIDs.IsNull() && !plan.AIProviderIDs.IsUnknown() {
+	if plan.Mode.ValueString() == siteResourceModeInference && setFullyKnown(plan.AIProviderIDs) {
 		ids, d := siteResourceSetToInts(ctx, plan.AIProviderIDs)
 		diags.Append(d...)
 		for _, id := range ids {
@@ -668,8 +696,8 @@ func buildCreateSiteResourceRequest(ctx context.Context, plan SitePrivateResourc
 }
 
 // siteResourceSites returns the site attachment for a request: a single
-// site goes in `siteId`, which every server version accepts, several in
-// `siteIds` (1.24+). An inference resource has none.
+// site goes in `siteId` (accepted up to 1.17 and from 1.19), several in
+// `siteIds` (1.18+). An inference resource has none.
 func siteResourceSites(ctx context.Context, plan SitePrivateResourceModel) (int, []int, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if plan.Mode.ValueString() == siteResourceModeInference {
@@ -677,7 +705,7 @@ func siteResourceSites(ctx context.Context, plan SitePrivateResourceModel) (int,
 	}
 	var ids []int
 	switch {
-	case !plan.SiteIDs.IsNull() && !plan.SiteIDs.IsUnknown():
+	case setFullyKnown(plan.SiteIDs):
 		ids, diags = siteResourceSetToInts(ctx, plan.SiteIDs)
 	case !plan.SiteID.IsNull() && !plan.SiteID.IsUnknown():
 		ids = []int{int(plan.SiteID.ValueInt64())}
@@ -686,6 +714,21 @@ func siteResourceSites(ctx context.Context, plan SitePrivateResourceModel) (int,
 		return ids[0], nil, diags
 	}
 	return 0, ids, diags
+}
+
+// setFullyKnown reports whether a set and every element are known: a
+// set can be known while holding the unknown ID of a resource created
+// in the same apply.
+func setFullyKnown(set types.Set) bool {
+	if set.IsNull() || set.IsUnknown() {
+		return false
+	}
+	for _, e := range set.Elements() {
+		if e.IsUnknown() {
+			return false
+		}
+	}
+	return true
 }
 
 // siteResourceSetToInts returns the sorted elements of a known set of
@@ -771,6 +814,29 @@ func buildUpdateSiteResourceRequest(ctx context.Context, plan *SitePrivateResour
 	return req, diags
 }
 
+// omitUnchangedOptionalKeys drops from an update body the keys that
+// older servers do not know (`ssl` before 1.18, `niceId` before 1.17;
+// their strict schemas refuse unknown keys) unless the config sets them
+// or their value differs from the prior state. prior is nil right after
+// a create.
+func omitUnchangedOptionalKeys(req *client.UpdateSiteResourceRequest, plan, cfg SitePrivateResourceModel, prior *SitePrivateResourceModel) {
+	keep := func(cfgNull, unchanged bool) bool {
+		return !cfgNull || (prior != nil && !unchanged)
+	}
+	if !keep(cfg.SSL.IsNull(), prior != nil && plan.SSL.Equal(prior.SSL)) {
+		req.SSL = nil
+	}
+	if !keep(cfg.NiceID.IsNull(), prior != nil && plan.NiceID.Equal(prior.NiceID)) {
+		req.NiceID = ""
+	}
+	if !keep(cfg.Enabled.IsNull(), prior != nil && plan.Enabled.Equal(prior.Enabled)) {
+		req.Enabled = nil
+	}
+	if !keep(cfg.AuthDaemonPort.IsNull(), prior != nil && plan.AuthDaemonPort.Equal(prior.AuthDaemonPort)) {
+		req.AuthDaemonPort = 0
+	}
+}
+
 // ValidateConfig requires `destination` outside gateway mode (it is
 // Optional in the schema only because gateway mode has none) and
 // rejects, in gateway mode, a value the server would overwrite: the
@@ -789,16 +855,10 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 
 	mode := cfg.Mode.ValueString()
 	checkString := func(attr string, v types.String, forced string) {
-		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
-			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
-				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %q.", mode, forced))
-		}
+		checkForcedString(&resp.Diagnostics, mode, attr, v, forced)
 	}
 	checkBool := func(attr string, v types.Bool, forced bool) {
-		if !v.IsNull() && !v.IsUnknown() && v.ValueBool() != forced {
-			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
-				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %t.", mode, forced))
-		}
+		checkForcedBool(&resp.Diagnostics, mode, attr, v, forced)
 	}
 
 	validateSiteResourceSites(cfg, &resp.Diagnostics)
@@ -853,11 +913,11 @@ func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.V
 				fmt.Sprintf("`%s` has no effect when `mode = \"gateway\"`; remove it.", attr))
 		}
 	}
-	knownString := func(v types.String) bool { return !v.IsNull() && !v.IsUnknown() }
-	unused("alias", knownString(cfg.Alias))
-	unused("domain_id", knownString(cfg.DomainID))
-	unused("subdomain", knownString(cfg.Subdomain))
-	unused("scheme", knownString(cfg.Scheme))
+	isSet := func(v types.String) bool { return !v.IsNull() && !v.IsUnknown() }
+	unused("alias", isSet(cfg.Alias))
+	unused("domain_id", isSet(cfg.DomainID))
+	unused("subdomain", isSet(cfg.Subdomain))
+	unused("scheme", isSet(cfg.Scheme))
 	unused("destination_port", !cfg.DestinationPort.IsNull() && !cfg.DestinationPort.IsUnknown())
 }
 
@@ -920,17 +980,26 @@ func validateSSHOrInferenceConfig(cfg SitePrivateResourceModel, resp *resource.V
 	if !known {
 		return
 	}
-	forcedString := func(attr string, v types.String, forced string) {
-		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
-			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
-				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %q.", mode, forced))
-		}
+	checkForcedString(&resp.Diagnostics, mode, "tcp_port_range", cfg.TCPPortRange, tcp)
+	checkForcedString(&resp.Diagnostics, mode, "udp_port_range", cfg.UDPPortRange, udp)
+	checkForcedBool(&resp.Diagnostics, mode, "disable_icmp", cfg.DisableICMP, icmp)
+}
+
+// checkForcedString reports a configured value that differs from the
+// one the server forces in this mode: the apply would otherwise end in
+// "Provider produced inconsistent result".
+func checkForcedString(diags *diag.Diagnostics, mode, attr string, v types.String, forced string) {
+	if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
+		diags.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+			fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %q.", mode, forced))
 	}
-	forcedString("tcp_port_range", cfg.TCPPortRange, tcp)
-	forcedString("udp_port_range", cfg.UDPPortRange, udp)
-	if !cfg.DisableICMP.IsNull() && !cfg.DisableICMP.IsUnknown() && cfg.DisableICMP.ValueBool() != icmp {
-		resp.Diagnostics.AddAttributeError(path.Root("disable_icmp"), fmt.Sprintf("Value overridden in %s mode", mode),
-			fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %t.", mode, icmp))
+}
+
+// checkForcedBool is checkForcedString for a bool.
+func checkForcedBool(diags *diag.Diagnostics, mode, attr string, v types.Bool, forced bool) {
+	if !v.IsNull() && !v.IsUnknown() && v.ValueBool() != forced {
+		diags.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+			fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %t.", mode, forced))
 	}
 }
 
@@ -974,13 +1043,18 @@ func (r *SitePrivateResource) ModifyPlan(ctx context.Context, req resource.Modif
 	switch {
 	case !cfg.SiteIDs.IsNull():
 		plan.SiteID = types.Int64Unknown()
-		if !cfg.SiteIDs.IsUnknown() {
+		switch {
+		case setFullyKnown(cfg.SiteIDs):
 			ids, diags := siteResourceSetToInts(ctx, cfg.SiteIDs)
 			resp.Diagnostics.Append(diags...)
 			plan.SiteID = types.Int64Null()
 			if len(ids) == 1 {
 				plan.SiteID = types.Int64Value(int64(ids[0]))
 			}
+		case !cfg.SiteIDs.IsUnknown() && len(cfg.SiteIDs.Elements()) > 1:
+			// Several sites, some created in the same apply: site_id
+			// is null whatever their IDs turn out to be.
+			plan.SiteID = types.Int64Null()
 		}
 	case !cfg.SiteID.IsNull():
 		plan.SiteIDs = types.SetUnknown(types.Int64Type)
