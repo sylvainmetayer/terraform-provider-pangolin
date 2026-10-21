@@ -425,7 +425,7 @@ func TestBuildHTTPResourceUpdateRequest_FullPayload(t *testing.T) {
 func TestBuildHTTPResourceUpdateRequest_EmptyHeadersListSent(t *testing.T) {
 	// A non-nil-but-empty Headers slice from the plan must produce a
 	// non-nil empty payload slice: it means "clear all injected
-	// headers", not "leave alone". isUnknownList uses "slice is nil"
+	// headers", not "leave alone". isNullList uses "slice is nil"
 	// as the "leave alone" signal.
 	plan := HTTPResourceModel{
 		Name:    types.StringValue("res"),
@@ -519,17 +519,17 @@ func TestHTTPResource_RoundTrip(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// isUnknownList
+// isNullList
 // -----------------------------------------------------------------------------
 
 func TestIsUnknownList(t *testing.T) {
-	if !isUnknownList(nil) {
+	if !isNullList(nil) {
 		t.Errorf("nil slice must count as unknown")
 	}
-	if isUnknownList([]ResourceHeaderModel{}) {
+	if isNullList([]ResourceHeaderModel{}) {
 		t.Errorf("empty slice is not unknown - user explicitly cleared")
 	}
-	if isUnknownList([]ResourceHeaderModel{{Name: types.StringValue("a"), Value: types.StringValue("b")}}) {
+	if isNullList([]ResourceHeaderModel{{Name: types.StringValue("a"), Value: types.StringValue("b")}}) {
 		t.Errorf("populated slice is not unknown")
 	}
 }

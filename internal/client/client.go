@@ -576,9 +576,10 @@ type Resource struct {
 
 // EffectiveRequestHeaders returns the request headers injected on the
 // upstream request, whichever key the server version used: the 1.24+
-// `requestHeaders` when present, the pre-1.24 `headers` otherwise.
+// `requestHeaders` when the response carried it (even as null, the
+// 1.24 cleared state), the pre-1.24 `headers` otherwise.
 func (r *Resource) EffectiveRequestHeaders() []ResourceHeader {
-	if r.RequestHeaders != nil {
+	if r.HasRequestHeadersKey || r.RequestHeaders != nil {
 		return r.RequestHeaders
 	}
 	return r.Headers

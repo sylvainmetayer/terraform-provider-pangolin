@@ -4486,6 +4486,7 @@ func TestResource_EffectiveRequestHeaders_Precedence(t *testing.T) {
 		{"pre-1.24 headers only", Resource{Headers: legacy}, legacy},
 		{"1.24 requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{{Name: "X-New", Value: "2"}}}, []ResourceHeader{{Name: "X-New", Value: "2"}}},
 		{"1.24 empty requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{}}, nil},
+		{"1.24 null requestHeaders ignores headers", Resource{Headers: legacy, HasRequestHeadersKey: true}, nil},
 		{"neither", Resource{}, nil},
 	}
 	for _, tc := range cases {

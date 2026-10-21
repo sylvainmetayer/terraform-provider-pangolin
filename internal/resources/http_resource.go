@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -25,8 +26,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &HTTPResource{}
-	_ resource.ResourceWithImportState = &HTTPResource{}
+	_ resource.Resource                   = &HTTPResource{}
+	_ resource.ResourceWithImportState    = &HTTPResource{}
+	_ resource.ResourceWithValidateConfig = &HTTPResource{}
 )
 
 // HTTPResource defines the resource implementation.
@@ -301,7 +303,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"headers": schema.ListNestedAttribute{
 				Description: "Static request headers injected on the upstream request - list of `{name, value}` objects " +
-					"(sent as `requestHeaders` to Pangolin >= 1.24, as `headers` to older servers). " +
+					"(sent as `requestHeaders` to Pangolin >= 1.24, as `headers` to older servers). Only for `mode = \"http\"`. " +
 					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
 					"on the next apply when the attribute is absent from the config, as are the ones it no longer lists. " +
 					"Removing the attribute, or setting it to `[]`, clears the headers on the server. Cannot be marked " +
@@ -316,7 +318,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"response_headers": schema.ListNestedAttribute{
 				Description: "Static headers added to the response sent back to the client - list of `{name, value}` " +
-					"objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. " +
+					"objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. Only for `mode = \"http\"`. " +
 					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
 					"on the next apply when the attribute is absent from the config. " +
 					"Removing the attribute, or setting it to `[]`, clears the headers on the server.",
@@ -511,6 +513,7 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), updateReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
+			r.rollBackCreate(ctx, int(plan.ID.ValueInt64()), resp)
 			return
 		}
 		resource = updated
@@ -518,6 +521,47 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	plan = applyHTTPResourceResponse(plan, resource)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, resource)...)
+}
+
+// rollBackCreate deletes a resource whose follow-up settings update
+// failed in Create, so it is not left on the server outside the
+// state (the next apply would create a duplicate, or fail on the
+// subdomain). If the delete fails too, only the ID is saved: Terraform
+// marks the resource tainted and replaces it on the next apply.
+func (r *HTTPResource) rollBackCreate(ctx context.Context, id int, resp *resource.CreateResponse) {
+	err := r.client.DeleteResource(ctx, id)
+	if err == nil {
+		return
+	}
+	resp.Diagnostics.AddError(
+		"Failed to delete the partially created resource",
+		fmt.Sprintf("Resource %d was created but its settings could not be applied, and deleting it failed: %s. "+
+			"It is kept in the state as tainted so the next apply replaces it.", id, err.Error()),
+	)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), types.Int64Value(int64(id)))...)
+}
+
+// ValidateConfig rejects header lists on L4 modes: the tcp / udp update
+// body has no header keys and the provider never sends them there, so
+// the configured value would never reach the server and the apply
+// would end with an inconsistent result.
+func (r *HTTPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var mode types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("mode"), &mode)...)
+	if resp.Diagnostics.HasError() || mode.IsNull() || mode.IsUnknown() || mode.ValueString() == "http" {
+		return
+	}
+	for _, attr := range []string{"headers", "response_headers"} {
+		var hs types.List
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(attr), &hs)...)
+		if !hs.IsNull() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(attr),
+				"Headers not supported in L4 mode",
+				fmt.Sprintf("`%s` only applies to `mode = \"http\"`; Pangolin does not inject headers on %s resources.", attr, mode.ValueString()),
+			)
+		}
+	}
 }
 
 func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -670,11 +714,11 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 			req.SetHostHeader = &s
 		}
 	}
-	if !isUnknownList(plan.Headers) {
+	if !isNullList(plan.Headers) {
 		hs := headersToWire(plan.Headers)
 		req.Headers = &hs
 	}
-	if plan.ResponseHeaders != nil {
+	if !isNullList(plan.ResponseHeaders) {
 		hs := headersToWire(plan.ResponseHeaders)
 		req.ResponseHeaders = &hs
 	}
@@ -738,11 +782,11 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 	return req
 }
 
-// isUnknownList reports whether a nested-list model slice came in
-// from Terraform as a null value (attribute absent from the config):
-// the framework decodes a null list into a nil slice, and an explicit
+// isNullList reports whether a nested-list model slice came in from
+// Terraform as a null value (attribute absent from the config): the
+// framework decodes a null list into a nil slice, and an explicit
 // empty list (`headers = []`) into a non-nil empty one.
-func isUnknownList(hs []ResourceHeaderModel) bool {
+func isNullList(hs []ResourceHeaderModel) bool {
 	return hs == nil
 }
 
@@ -759,11 +803,11 @@ func isUnknownList(hs []ResourceHeaderModel) bool {
 // the key is never sent to a server that never reported any, so
 // pre-1.24 servers, which refuse it, are unaffected.
 func clearRemovedHeaders(req *client.UpdateResourceRequest, plan, state HTTPResourceModel) {
-	if req.Headers == nil && plan.Headers == nil && len(state.Headers) > 0 {
+	if isNullList(plan.Headers) && len(state.Headers) > 0 {
 		empty := []client.ResourceHeader{}
 		req.Headers = &empty
 	}
-	if req.ResponseHeaders == nil && plan.ResponseHeaders == nil && len(state.ResponseHeaders) > 0 {
+	if isNullList(plan.ResponseHeaders) && len(state.ResponseHeaders) > 0 {
 		var none []client.ResourceHeader
 		req.ResponseHeaders = &none
 	}
