@@ -196,6 +196,7 @@ func (p *PangolinProvider) Resources(_ context.Context) []func() resource.Resour
 		resources.NewResourceAccessTokenResource,
 		resources.NewAPIKeyActionsResource,
 		resources.NewOrgIDPResource,
+		resources.NewDomainResource,
 	}
 }
 
