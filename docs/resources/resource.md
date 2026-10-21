@@ -3,18 +3,15 @@
 page_title: "pangolin_resource Resource - pangolin"
 subcategory: ""
 description: |-
-  Manages a Pangolin resource - the public-facing endpoint that Pangolin exposes. The mode attribute picks the transport: http (reverse-proxy the historical default), tcp or udp (raw L4). HTTP resources are addressed by domain_id + subdomain; L4 resources are addressed by proxy_port on the Pangolin edge.
+  Manages a Pangolin resource - the public-facing endpoint that Pangolin exposes. The mode attribute picks the transport: http (reverse-proxy the historical default), ssh / rdp / vnc (browser-based access, Pangolin >= 1.20), inference (AI gateway endpoint, Pangolin >= 1.22) or tcp / udp (raw L4). All modes except tcp / udp are addressed by domain_id + subdomain; L4 resources are addressed by proxy_port on the Pangolin edge.
   **Note:** the 1.19+ attributes (`mode`, `pam_mode`, `auth_daemon_*`, `set_host_header`, `enable_proxy`, `headers`, `proxy_protocol*`, `maintenance_*`, `post_auth_path`, `skip_to_idp_id`, `resource_guid`, `health`, `resource_policy_id`, `default_resource_policy_id`) are only meaningful on Pangolin >= 1.19. On older servers they either fall back to the server default or stay absent from the wire (Optional+Computed keeps state consistent).
-  **Note:** SSH / RDP / VNC bastions are `mode = "tcp"` resources with `pam_mode` and `auth_daemon_*` set. The Pangolin server does not yet accept `ssh`/`rdp`/`vnc` as literal `mode` values.
 ---
 
 # pangolin_resource (Resource)
 
-Manages a Pangolin resource - the public-facing endpoint that Pangolin exposes. The `mode` attribute picks the transport: `http` (reverse-proxy the historical default), `tcp` or `udp` (raw L4). HTTP resources are addressed by `domain_id` + `subdomain`; L4 resources are addressed by `proxy_port` on the Pangolin edge.
+Manages a Pangolin resource - the public-facing endpoint that Pangolin exposes. The `mode` attribute picks the transport: `http` (reverse-proxy the historical default), `ssh` / `rdp` / `vnc` (browser-based access, Pangolin >= 1.20), `inference` (AI gateway endpoint, Pangolin >= 1.22) or `tcp` / `udp` (raw L4). All modes except `tcp` / `udp` are addressed by `domain_id` + `subdomain`; L4 resources are addressed by `proxy_port` on the Pangolin edge.
 
 > **Note:** the 1.19+ attributes (`mode`, `pam_mode`, `auth_daemon_*`, `set_host_header`, `enable_proxy`, `headers`, `proxy_protocol*`, `maintenance_*`, `post_auth_path`, `skip_to_idp_id`, `resource_guid`, `health`, `resource_policy_id`, `default_resource_policy_id`) are only meaningful on Pangolin >= 1.19. On older servers they either fall back to the server default or stay absent from the wire (Optional+Computed keeps state consistent).
-
-> **Note:** SSH / RDP / VNC bastions are `mode = "tcp"` resources with `pam_mode` and `auth_daemon_*` set. The Pangolin server does not yet accept `ssh`/`rdp`/`vnc` as literal `mode` values.
 
 ## Example Usage
 
@@ -55,27 +52,50 @@ resource "pangolin_resource" "web_advanced" {
 }
 
 # ---------------------------------------------------------------------
-# SSH bastion - a `mode = "tcp"` resource fronted by the Pangolin
-# auth-daemon on the edge. `pam_mode = "push"` triggers a
-# push-notification MFA flow on ssh login.
+# Browser-based SSH (Pangolin >= 1.20). Reached through a domain like an
+# HTTP resource; `pam_mode = "push"` pushes the user's credentials to
+# the target host. Targets created for it inherit `mode = "ssh"`.
 # ---------------------------------------------------------------------
 resource "pangolin_resource" "ssh_bastion" {
-  name       = "ssh-jumpbox"
-  mode       = "tcp"
-  proxy_port = 2222
-  pam_mode   = "push"
-  sso        = true
+  name             = "ssh-jumpbox"
+  mode             = "ssh"
+  subdomain        = "ssh"
+  domain_id        = data.pangolin_domains.all.domains[0].domain_id
+  pam_mode         = "push"
+  auth_daemon_mode = "site"
+  sso              = true
 }
 
 # ---------------------------------------------------------------------
-# RDP resource. Same shape as SSH - Windows RDP is just L4 TCP with a
-# well-known destination port.
+# Browser-based RDP (Pangolin >= 1.20). `vnc` works the same way.
 # ---------------------------------------------------------------------
 resource "pangolin_resource" "rdp_desktop" {
-  name       = "win-workstation"
+  name      = "win-workstation"
+  mode      = "rdp"
+  subdomain = "desktop"
+  domain_id = data.pangolin_domains.all.domains[0].domain_id
+  sso       = true
+}
+
+# ---------------------------------------------------------------------
+# Raw TCP resource on a public port of the Pangolin edge.
+# ---------------------------------------------------------------------
+resource "pangolin_resource" "postgres" {
+  name       = "postgres"
   mode       = "tcp"
-  proxy_port = 3389
-  sso        = true
+  proxy_port = 5432
+}
+
+# ---------------------------------------------------------------------
+# AI gateway endpoint (Pangolin >= 1.22). The AI providers are created
+# in Pangolin; their IDs are attached here in inherit mode.
+# ---------------------------------------------------------------------
+resource "pangolin_resource" "llm" {
+  name            = "llm-gateway"
+  mode            = "inference"
+  subdomain       = "llm"
+  domain_id       = data.pangolin_domains.all.domains[0].domain_id
+  ai_provider_ids = [1, 2]
 }
 
 # ---------------------------------------------------------------------
@@ -105,11 +125,12 @@ resource "pangolin_resource" "under_maintenance" {
 
 ### Optional
 
+- `ai_provider_ids` (Set of Number) IDs of the AI providers attached to an `inference` resource (Pangolin >= 1.22). Providers are attached in inherit mode, using each provider's own allow/block lists. Leave unset to keep whatever is attached on the server; set `[]` to detach every provider. Only valid with `mode = "inference"`. Reading it needs the API key to be allowed to list the resource's AI models.
 - `apply_rules` (Boolean) Enable evaluation of access rules on this resource.
-- `auth_daemon_mode` (String) Auth-daemon deployment mode for L4 resources. Typical values: `sidecar`, `remote`.
+- `auth_daemon_mode` (String) Auth-daemon deployment mode for SSH resources. One of `site`, `remote` or `native`.
 - `auth_daemon_port` (Number) TCP port the auth daemon listens on when `auth_daemon_mode` is set.
 - `block_access` (Boolean) Block all access to the resource.
-- `domain_id` (String) The domain ID to attach this resource to. Required when `mode = "http"`, leave unset for L4 modes.
+- `domain_id` (String) The domain ID to attach this resource to. Required for `http`, `ssh`, `rdp`, `vnc` and `inference`; leave unset for L4 modes.
 - `email_whitelist_enabled` (Boolean) Enable the email whitelist on this resource.
 - `enabled` (Boolean) Enable or disable the resource.
 - `headers` (Attributes List) Static request headers injected on the upstream request - list of `{name, value}` objects. Leave unset to keep the server default (no injection). Cannot be marked Computed because the Go slice model type in the plugin framework does not carry an "unknown" sentinel. (see [below for nested schema](#nestedatt--headers))
@@ -118,19 +139,17 @@ resource "pangolin_resource" "under_maintenance" {
 - `maintenance_mode_enabled` (Boolean) Serve a maintenance page (or reject the L4 connection) instead of proxying.
 - `maintenance_mode_type` (String) Maintenance type - free-form label surfaced on the maintenance page.
 - `maintenance_title` (String) Maintenance page title.
-- `mode` (String) The resource mode. One of `http` (reverse proxy, default), `tcp` or `udp` (raw L4). Changing this attribute forces replacement.
-
-> **Note:** SSH / RDP / VNC bastion modes are configured by starting from `mode = "tcp"` and layering `pam_mode` / `auth_daemon_mode` / `auth_daemon_port`. The Pangolin server does **not** accept `"ssh"` / `"rdp"` / `"vnc"` as literal mode values yet (spec-ahead-of-server pattern in 1.19).
+- `mode` (String) The resource mode. One of `http` (reverse proxy, default), `ssh`, `rdp` or `vnc` (browser-based access, Pangolin >= 1.20), `inference` (AI gateway endpoint, Pangolin >= 1.22; see `ai_provider_ids`), `tcp` or `udp` (raw L4). `ssh` / `rdp` / `vnc` / `inference` require `domain_id` and do not take `proxy_port`. Targets created for the resource inherit its mode. Changing this attribute forces replacement.
 - `pam_mode` (String) PAM (Pluggable Authentication Module) mode for SSH resources. One of `passthrough` or `push`. Only meaningful for `mode = "ssh"`.
 - `post_auth_path` (String) Landing path after a successful login (e.g. `/dashboard`).
-- `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / `tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.
-- `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `ssh` / `rdp` / `vnc` / `tcp` / `udp` modes; ignored for `http`. Changing this attribute forces replacement.
+- `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `tcp` / `udp` L4 modes; ignored for the other modes. Defaults to `tcp`.
+- `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `tcp` / `udp` modes; must be left unset for `ssh` / `rdp` / `vnc` / `inference` and ignored for `http`. Changing this attribute forces replacement.
 - `set_host_header` (String) Override the upstream `Host` header. Only meaningful for `mode = "http"`. Set to null to keep the incoming host.
 - `skip_to_idp_id` (Number) Bypass the Pangolin login page and jump straight to the given IdP.
 - `ssl` (Boolean) Enable SSL towards the backend.
 - `sso` (Boolean) Enable Pangolin SSO authentication on this resource. Set to false to make the resource publicly accessible.
 - `sticky_session` (Boolean) Enable sticky sessions (persistent sessions) on this resource.
-- `subdomain` (String) The subdomain for the resource. Only used when `mode = "http"`; ignored for L4 modes. Set to null to use the base domain.
+- `subdomain` (String) The subdomain for the resource. Used by every mode except `tcp` / `udp`; ignored for L4 modes. Set to null to use the base domain.
 - `tls_server_name` (String) TLS server name for the backend. Set to null to clear.
 
 ### Read-Only

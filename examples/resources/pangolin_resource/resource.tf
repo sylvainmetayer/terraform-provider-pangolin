@@ -34,27 +34,50 @@ resource "pangolin_resource" "web_advanced" {
 }
 
 # ---------------------------------------------------------------------
-# SSH bastion - a `mode = "tcp"` resource fronted by the Pangolin
-# auth-daemon on the edge. `pam_mode = "push"` triggers a
-# push-notification MFA flow on ssh login.
+# Browser-based SSH (Pangolin >= 1.20). Reached through a domain like an
+# HTTP resource; `pam_mode = "push"` pushes the user's credentials to
+# the target host. Targets created for it inherit `mode = "ssh"`.
 # ---------------------------------------------------------------------
 resource "pangolin_resource" "ssh_bastion" {
-  name       = "ssh-jumpbox"
-  mode       = "tcp"
-  proxy_port = 2222
-  pam_mode   = "push"
-  sso        = true
+  name             = "ssh-jumpbox"
+  mode             = "ssh"
+  subdomain        = "ssh"
+  domain_id        = data.pangolin_domains.all.domains[0].domain_id
+  pam_mode         = "push"
+  auth_daemon_mode = "site"
+  sso              = true
 }
 
 # ---------------------------------------------------------------------
-# RDP resource. Same shape as SSH - Windows RDP is just L4 TCP with a
-# well-known destination port.
+# Browser-based RDP (Pangolin >= 1.20). `vnc` works the same way.
 # ---------------------------------------------------------------------
 resource "pangolin_resource" "rdp_desktop" {
-  name       = "win-workstation"
+  name      = "win-workstation"
+  mode      = "rdp"
+  subdomain = "desktop"
+  domain_id = data.pangolin_domains.all.domains[0].domain_id
+  sso       = true
+}
+
+# ---------------------------------------------------------------------
+# Raw TCP resource on a public port of the Pangolin edge.
+# ---------------------------------------------------------------------
+resource "pangolin_resource" "postgres" {
+  name       = "postgres"
   mode       = "tcp"
-  proxy_port = 3389
-  sso        = true
+  proxy_port = 5432
+}
+
+# ---------------------------------------------------------------------
+# AI gateway endpoint (Pangolin >= 1.22). The AI providers are created
+# in Pangolin; their IDs are attached here in inherit mode.
+# ---------------------------------------------------------------------
+resource "pangolin_resource" "llm" {
+  name            = "llm-gateway"
+  mode            = "inference"
+  subdomain       = "llm"
+  domain_id       = data.pangolin_domains.all.domains[0].domain_id
+  ai_provider_ids = [1, 2]
 }
 
 # ---------------------------------------------------------------------
