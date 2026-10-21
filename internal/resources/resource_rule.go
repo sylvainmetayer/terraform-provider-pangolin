@@ -24,6 +24,11 @@ var (
 	_ resource.ResourceWithImportState = &ResourceRuleResource{}
 )
 
+// resourceRuleMatchTypes mirrors RESOURCE_RULE_MATCH_TYPES in Pangolin's
+// server/lib/validators.ts. The match validator and its description both
+// read it so they cannot drift.
+var resourceRuleMatchTypes = []string{"CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "ASN", "REGION", "METHOD"}
+
 // ResourceRuleResource manages an access control rule for a Pangolin HTTP resource.
 type ResourceRuleResource struct {
 	client *client.Client
@@ -75,15 +80,21 @@ func (r *ResourceRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"match": schema.StringAttribute{
-				Description: "The match type: `CIDR`, `IP`, `PATH`, `COUNTRY`, `COUNTRY_IS_NOT`, `REGION`, or `ASN`.",
-				Required:    true,
+				Description: "The match type: `" + strings.Join(resourceRuleMatchTypes, "`, `") + "`. " +
+					"`COUNTRY_IS_NOT` matches requests from any country except `value`. " +
+					"`COUNTRY_IS_NOT`, `REGION` and `METHOD` need a Pangolin server that supports them (1.24 accepts all of them).",
+				Required: true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "REGION", "ASN"),
+					stringvalidator.OneOf(resourceRuleMatchTypes...),
 				},
 			},
 			"value": schema.StringAttribute{
-				Description: "The value to match against (e.g. CIDR range, IP address, path prefix, country code, ASN).",
-				Required:    true,
+				Description: "The value to match against. The server checks its format against `match`: " +
+					"a CIDR range for `CIDR` (e.g. `10.0.0.0/8`), an IP address for `IP`, a URL glob pattern for `PATH` (e.g. `/admin/*`), " +
+					"an ISO 3166-1 alpha-2 country code for `COUNTRY` and `COUNTRY_IS_NOT` (e.g. `FR`), " +
+					"an ASN for `ASN` (e.g. `AS13335`), a UN M49 region code for `REGION` (e.g. `150` for Europe, `015` for Northern Africa), " +
+					"or a comma-separated list of HTTP methods for `METHOD` (e.g. `POST,PUT,DELETE`).",
+				Required: true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
@@ -136,12 +147,7 @@ func (r *ResourceRuleResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	plan.ID = types.Int64Value(int64(rule.RuleID))
-	plan.Action = types.StringValue(rule.Action)
-	plan.Match = types.StringValue(rule.Match)
-	plan.Value = types.StringValue(rule.Value)
-	plan.Priority = types.Int64Value(int64(rule.Priority))
-	plan.Enabled = types.BoolValue(rule.Enabled)
+	plan = applyResourceRuleResponse(plan, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -163,11 +169,7 @@ func (r *ResourceRuleResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	state.Action = types.StringValue(rule.Action)
-	state.Match = types.StringValue(rule.Match)
-	state.Value = types.StringValue(rule.Value)
-	state.Priority = types.Int64Value(int64(rule.Priority))
-	state.Enabled = types.BoolValue(rule.Enabled)
+	state = applyResourceRuleResponse(state, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -191,11 +193,7 @@ func (r *ResourceRuleResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	plan.Action = types.StringValue(rule.Action)
-	plan.Match = types.StringValue(rule.Match)
-	plan.Value = types.StringValue(rule.Value)
-	plan.Priority = types.Int64Value(int64(rule.Priority))
-	plan.Enabled = types.BoolValue(rule.Enabled)
+	plan = applyResourceRuleResponse(plan, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -243,20 +241,22 @@ func (r *ResourceRuleResource) ImportState(ctx context.Context, req resource.Imp
 		return
 	}
 
-	// The list endpoint's rule projection does NOT include resourceId (server
-	// selects only ruleId/enabled/priority/action/match/value), so
-	// rule.ResourceID is always the zero value here. Use the resource ID parsed
-	// from the import address instead -- otherwise resource_id imports as 0 and
-	// the follow-up Read does GET /resource/0/rules, finds nothing, and removes
-	// the resource, which Terraform surfaces as "Cannot import non-existent
-	// remote object".
-	resp.Diagnostics.Append(resp.State.Set(ctx, &ResourceRuleModel{
-		ID:         types.Int64Value(int64(rule.RuleID)),
-		ResourceID: types.Int64Value(resourceID),
-		Action:     types.StringValue(rule.Action),
-		Match:      types.StringValue(rule.Match),
-		Value:      types.StringValue(rule.Value),
-		Priority:   types.Int64Value(int64(rule.Priority)),
-		Enabled:    types.BoolValue(rule.Enabled),
-	})...)
+	// resource_id comes from the import address, never from the wire: the
+	// rules list does not always carry resourceId (see GetResourceRule), and
+	// a 0 here made the follow-up Read query /resource/0/rules, find nothing
+	// and drop the resource ("Cannot import non-existent remote object").
+	m := applyResourceRuleResponse(ResourceRuleModel{ResourceID: types.Int64Value(resourceID)}, rule)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+// applyResourceRuleResponse copies the server's view of a rule onto m.
+// resource_id is left untouched: it comes from config or the import address.
+func applyResourceRuleResponse(m ResourceRuleModel, rule *client.ResourceRule) ResourceRuleModel {
+	m.ID = types.Int64Value(int64(rule.RuleID))
+	m.Action = types.StringValue(rule.Action)
+	m.Match = types.StringValue(rule.Match)
+	m.Value = types.StringValue(rule.Value)
+	m.Priority = types.Int64Value(int64(rule.Priority))
+	m.Enabled = types.BoolValue(rule.Enabled)
+	return m
 }

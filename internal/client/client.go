@@ -3260,6 +3260,9 @@ func (c *Client) GetResourceRule(ctx context.Context, resourceID, ruleID int) (*
 	for _, r := range result.Rules {
 		if r.RuleID == ruleID {
 			rule := r
+			// The list sends resourceId as null for rules backed by the
+			// resource's inline policy (1.24+), so take it from the path.
+			rule.ResourceID = resourceID
 			return &rule, nil
 		}
 	}

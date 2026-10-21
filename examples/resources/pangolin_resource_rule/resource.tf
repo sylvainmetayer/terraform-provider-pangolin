@@ -16,3 +16,21 @@ resource "pangolin_resource_rule" "block_country" {
   value       = "CN"
   priority    = 10
 }
+
+# Drop everything from outside France, then keep evaluating later rules
+resource "pangolin_resource_rule" "france_only" {
+  resource_id = pangolin_resource.example.id
+  action      = "DROP"
+  match       = "COUNTRY_IS_NOT"
+  value       = "FR"
+  priority    = 20
+}
+
+# Drop write methods (comma-separated list)
+resource "pangolin_resource_rule" "read_only" {
+  resource_id = pangolin_resource.example.id
+  action      = "DROP"
+  match       = "METHOD"
+  value       = "POST,PUT,PATCH,DELETE"
+  priority    = 30
+}

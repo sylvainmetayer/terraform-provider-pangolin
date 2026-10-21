@@ -4395,6 +4395,43 @@ func TestResource_DecodesPost119WireShape(t *testing.T) {
 	}
 }
 
+// --- Resource rules ---
+
+func TestGetResourceRule_ResourceIDFromPath(t *testing.T) {
+	// 1.24 payload for a resource on its inline policy: resourceId is
+	// null on every rule. Before that, the list left it out entirely.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/resource/13/rules" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"rules": []map[string]any{
+				{"ruleId": 4, "resourceId": nil, "action": "ACCEPT", "match": "CIDR", "value": "10.0.0.0/8", "priority": 1, "enabled": true},
+				{"ruleId": 5, "resourceId": nil, "action": "DROP", "match": "COUNTRY_IS_NOT", "value": "FR", "priority": 2, "enabled": true},
+			},
+			"pagination": map[string]any{"total": 2, "limit": 1000, "offset": 0},
+		})
+	})
+
+	rule, err := c.GetResourceRule(context.Background(), 13, 5)
+	if err != nil {
+		t.Fatalf("GetResourceRule: %v", err)
+	}
+	if rule.RuleID != 5 || rule.ResourceID != 13 || rule.Match != "COUNTRY_IS_NOT" || rule.Value != "FR" {
+		t.Errorf("rule = %+v", rule)
+	}
+}
+
+func TestGetResourceRule_MissingRuleIsNotFound(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"rules": []any{}})
+	})
+	_, err := c.GetResourceRule(context.Background(), 13, 5)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
 // extractParam grabs the value of a single URL query parameter from a raw
 // query string. Returns "" if absent. Does not unescape.
 func extractParam(rawQuery, key string) string {
