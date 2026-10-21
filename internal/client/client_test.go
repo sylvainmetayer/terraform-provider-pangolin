@@ -4616,3 +4616,64 @@ func TestUpdateSiteResource_NoRetryOnOtherErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestIsMissingGrantListsError_Wordings(t *testing.T) {
+	bad := func(msg string) error {
+		return errors.Join(errors.New("pangolin API error (status 400): "+msg), ErrBadRequest)
+	}
+	for _, tc := range []struct {
+		msg  string
+		want bool
+	}{
+		{pre120MissingGrantListsMessage, true},
+		{`Validation error: Invalid input: expected array, received undefined at "roleIds"`, true},
+		{`Validation error: Invalid input: expected array, received undefined at roleIds`, true},
+		{`Validation error: Required at "clientIds"`, true},
+		{`Validation error: Required at "name"; Invalid input: expected number, received string at "roleIds[0]"`, false},
+		{`Validation error: Invalid input: expected array, received undefined at "roleIds[0]"`, false},
+		{`Validation error: Invalid input: expected string, received undefined at "name"`, false},
+		{`Validation error: Invalid input: expected array, received null at "userIds"`, false},
+	} {
+		if got := isMissingGrantListsError(bad(tc.msg)); got != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+	if isMissingGrantListsError(errors.New(pre120MissingGrantListsMessage)) {
+		t.Error("an error that is not a 400 must not match")
+	}
+}
+
+func TestUpdateSiteResource_NilBackedListEncodesEmpty(t *testing.T) {
+	// A pointer to a nil slice still means "no grants": [] on the wire,
+	// never null, on 1.20+ and on the pre-1.20 fallback alike.
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 11})
+	})
+	var roles []int
+	req := &UpdateSiteResourceRequest{Name: "db", SiteID: 5, RoleIDs: &roles}
+	if _, err := c.UpdateSiteResource(context.Background(), 11, req); err != nil {
+		t.Fatalf("UpdateSiteResource: %v", err)
+	}
+	if string(gotBody["roleIds"]) != "[]" {
+		t.Errorf("roleIds = %s, want []", gotBody["roleIds"])
+	}
+	if req.RoleIDs != &roles || roles != nil {
+		t.Error("the caller's request must not be modified")
+	}
+
+	var posts []map[string]json.RawMessage
+	legacy := newTestClient(t, pre120SiteResourceServer(t, &posts))
+	if _, err := legacy.UpdateSiteResource(context.Background(), 11, &UpdateSiteResourceRequest{
+		Name: "db", SiteID: 5, ClientIDs: &[]int{}, RoleIDs: &roles,
+	}); err != nil {
+		t.Fatalf("legacy UpdateSiteResource: %v", err)
+	}
+	retry := posts[len(posts)-1]
+	if string(retry["roleIds"]) != "[]" || string(retry["clientIds"]) != "[]" || string(retry["userIds"]) != `["u9"]` {
+		t.Errorf("legacy retry = %v", retry)
+	}
+}

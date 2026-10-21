@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1516,16 +1517,26 @@ type legacyUpdateSiteResourceBody struct {
 	ClientIDs []int    `json:"clientIds"`
 }
 
+// grantListIssue matches one validation issue naming a grant list
+// itself (not one of its elements), quoted or not.
+var grantListIssue = regexp.MustCompile(`(^|[^A-Za-z0-9_.\[])(roleIds|userIds|clientIds)($|[^A-Za-z0-9_.\[])`)
+
 // isMissingGrantListsError reports whether err is a pre-1.20 server
-// refusing an update body without `roleIds` / `userIds` / `clientIds`
-// (zod: `expected array, received undefined at "roleIds"`).
+// refusing an update body without `roleIds` / `userIds` / `clientIds`.
+// The lists became required in 1.13, and every release up to 1.19 words
+// it `expected array, received undefined at "roleIds"` (zod 4 through
+// zod-validation-error 5). The zod 3 `Required at "roleIds"` wording is
+// accepted too. Issues are joined by "; ", so each one is checked on its
+// own: a type error on a list element or on another field does not match.
 func isMissingGrantListsError(err error) bool {
 	if !errors.Is(err, ErrBadRequest) {
 		return false
 	}
-	msg := err.Error()
-	for _, k := range []string{`"roleIds"`, `"userIds"`, `"clientIds"`} {
-		if strings.Contains(msg, "received undefined at "+k) {
+	for _, issue := range strings.Split(err.Error(), ";") {
+		if !strings.Contains(issue, "received undefined") && !strings.Contains(issue, "Required") {
+			continue
+		}
+		if grantListIssue.MatchString(issue) {
 			return true
 		}
 	}
@@ -1545,7 +1556,7 @@ func (c *Client) UpdateSiteResource(ctx context.Context, siteResourceID int, req
 	if c.legacySiteResourceGrants.Load() {
 		resp, err = c.updateSiteResourceLegacy(ctx, siteResourceID, req)
 	} else {
-		resp, err = c.doRequest(ctx, "POST", path, req)
+		resp, err = c.doRequest(ctx, "POST", path, normalizeGrantLists(req))
 		if err != nil && isMissingGrantListsError(err) {
 			c.legacySiteResourceGrants.Store(true)
 			resp, err = c.updateSiteResourceLegacy(ctx, siteResourceID, req)
@@ -1561,53 +1572,99 @@ func (c *Client) UpdateSiteResource(ctx context.Context, siteResourceID int, req
 	return &siteResource, nil
 }
 
+// normalizeGrantLists returns req with a pointer to a nil grant list
+// turned into a pointer to an empty one, so it encodes as [] ("no
+// grants") rather than null, which the update schema refuses.
+func normalizeGrantLists(req *UpdateSiteResourceRequest) *UpdateSiteResourceRequest {
+	out := *req
+	out.RoleIDs = emptyIfNilList(req.RoleIDs)
+	out.UserIDs = emptyIfNilList(req.UserIDs)
+	out.ClientIDs = emptyIfNilList(req.ClientIDs)
+	return &out
+}
+
+func emptyIfNilList[T any](p *[]T) *[]T {
+	if p != nil && *p == nil {
+		empty := []T{}
+		return &empty
+	}
+	return p
+}
+
 // updateSiteResourceLegacy sends the update with explicit grant lists
 // for a pre-1.20 server. A list the caller left nil is filled with the
 // current grants. Admin roles are left out: those servers keep the admin
-// role binding themselves and would fail inserting it twice.
+// role binding themselves and would fail inserting it twice; every
+// release with required lists (1.13 to 1.19) reports isAdmin on the
+// listed roles.
+//
+// Reading the grants and posting them back is not atomic: a grant added
+// or removed by someone else in between is undone. This only applies to
+// servers older than 1.20, which offer no way to leave the grants out.
 func (c *Client) updateSiteResourceLegacy(ctx context.Context, siteResourceID int, req *UpdateSiteResourceRequest) (*APIResponse, error) {
-	body := legacyUpdateSiteResourceBody{
-		UpdateSiteResourceRequest: req,
-		RoleIDs:                   []int{},
-		UserIDs:                   []string{},
-		ClientIDs:                 []int{},
-	}
-	if req.RoleIDs != nil {
-		body.RoleIDs = append(body.RoleIDs, *req.RoleIDs...)
-	} else {
-		roles, err := c.ListSiteResourceRoles(ctx, siteResourceID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read current role grants: %w", err)
+	roleIDs, err := legacyGrantList(req.RoleIDs, func() ([]int, error) {
+		roles, listErr := c.ListSiteResourceRoles(ctx, siteResourceID)
+		if listErr != nil {
+			return nil, fmt.Errorf("failed to read current role grants: %w", listErr)
 		}
+		ids := []int{}
 		for _, r := range roles {
 			if !r.IsAdmin {
-				body.RoleIDs = append(body.RoleIDs, r.RoleID)
+				ids = append(ids, r.RoleID)
 			}
 		}
+		return ids, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if req.UserIDs != nil {
-		body.UserIDs = append(body.UserIDs, *req.UserIDs...)
-	} else {
-		users, err := c.ListSiteResourceUsers(ctx, siteResourceID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read current user grants: %w", err)
+	userIDs, err := legacyGrantList(req.UserIDs, func() ([]string, error) {
+		users, listErr := c.ListSiteResourceUsers(ctx, siteResourceID)
+		if listErr != nil {
+			return nil, fmt.Errorf("failed to read current user grants: %w", listErr)
 		}
+		ids := []string{}
 		for _, u := range users {
-			body.UserIDs = append(body.UserIDs, u.UserID)
+			ids = append(ids, u.UserID)
 		}
+		return ids, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if req.ClientIDs != nil {
-		body.ClientIDs = append(body.ClientIDs, *req.ClientIDs...)
-	} else {
-		clients, err := c.ListSiteResourceClients(ctx, siteResourceID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read current client grants: %w", err)
+	clientIDs, err := legacyGrantList(req.ClientIDs, func() ([]int, error) {
+		clients, listErr := c.ListSiteResourceClients(ctx, siteResourceID)
+		if listErr != nil {
+			return nil, fmt.Errorf("failed to read current client grants: %w", listErr)
 		}
+		ids := []int{}
 		for _, cl := range clients {
-			body.ClientIDs = append(body.ClientIDs, cl.ClientID)
+			ids = append(ids, cl.ClientID)
 		}
+		return ids, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	body := legacyUpdateSiteResourceBody{
+		UpdateSiteResourceRequest: req,
+		RoleIDs:                   roleIDs,
+		UserIDs:                   userIDs,
+		ClientIDs:                 clientIDs,
 	}
 	return c.doRequest(ctx, "POST", fmt.Sprintf("/site-resource/%d", siteResourceID), body)
+}
+
+// legacyGrantList returns the caller's list when it is set (never nil,
+// so it encodes as []), else the current grants read by current.
+func legacyGrantList[T any](given *[]T, current func() ([]T, error)) ([]T, error) {
+	if given == nil {
+		return current()
+	}
+	if *given == nil {
+		return []T{}, nil
+	}
+	return *given, nil
 }
 
 // --- Roles CRUD ---
