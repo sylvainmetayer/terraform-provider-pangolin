@@ -115,7 +115,8 @@ func TestResourceModeConfigValidator(t *testing.T) {
 		{"inference with providers", map[string]tftypes.Value{"mode": tfString("inference"), "domain_id": tfString("d"), "ai_provider_ids": tfNumberSet(1, 2)}, ""},
 		{"http with providers", map[string]tftypes.Value{"mode": tfString("http"), "domain_id": tfString("d"), "ai_provider_ids": tfNumberSet(1)}, "Unsupported ai_provider_ids"},
 		{"default mode with providers", map[string]tftypes.Value{"domain_id": tfString("d"), "ai_provider_ids": tfNumberSet(1)}, "Unsupported ai_provider_ids"},
-		{"http with empty providers", map[string]tftypes.Value{"mode": tfString("http"), "ai_provider_ids": tfNumberSet()}, ""},
+		{"http with empty providers", map[string]tftypes.Value{"mode": tfString("http"), "ai_provider_ids": tfNumberSet()}, "Unsupported ai_provider_ids"},
+		{"inference with empty providers", map[string]tftypes.Value{"mode": tfString("inference"), "domain_id": tfString("d"), "ai_provider_ids": tfNumberSet()}, ""},
 		{"tcp unchanged", map[string]tftypes.Value{"mode": tfString("tcp"), "proxy_port": tfNumber(2222)}, ""},
 		{"http without domain unchanged", map[string]tftypes.Value{"mode": tfString("http")}, ""},
 		{"unknown mode skipped", map[string]tftypes.Value{"mode": tftypes.NewValue(tftypes.String, tftypes.UnknownValue)}, ""},
@@ -230,11 +231,13 @@ func TestDiffAIProviderIDs(t *testing.T) {
 }
 
 // aiProviderStub serves GET/POST /v1/resource/{id}/ai-providers[/add|/remove]
-// against an in-memory list and records the write calls.
+// against an in-memory list and records every call. listStatus, when
+// set, is returned on the list call instead of the list.
 type aiProviderStub struct {
-	mu       sync.Mutex
-	attached map[int]bool
-	calls    []string
+	mu         sync.Mutex
+	attached   map[int]bool
+	calls      []string
+	listStatus int
 }
 
 func (s *aiProviderStub) handler(t *testing.T) http.HandlerFunc {
@@ -247,6 +250,12 @@ func (s *aiProviderStub) handler(t *testing.T) http.HandlerFunc {
 		}
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/v1/resource/9/ai-providers":
+			s.calls = append(s.calls, "list")
+			if s.listStatus != 0 {
+				w.WriteHeader(s.listStatus)
+				_ = json.NewEncoder(w).Encode(client.APIResponse{Error: true, Message: "denied", Status: s.listStatus})
+				return
+			}
 			ids := make([]int, 0, len(s.attached))
 			for id := range s.attached {
 				ids = append(ids, id)
@@ -290,49 +299,98 @@ func newAIProviderStubResource(t *testing.T, attached ...int) (*HTTPResource, *a
 	return &HTTPResource{client: c}, stub
 }
 
-func TestHTTPResource_SyncAIProviders(t *testing.T) {
-	ctx := context.Background()
+func int64Set(vs ...int64) types.Set {
+	elems := make([]attr.Value, len(vs))
+	for i, v := range vs {
+		elems[i] = types.Int64Value(v)
+	}
+	return types.SetValueMust(types.Int64Type, elems)
+}
+
+func inferenceModel(providers types.Set) HTTPResourceModel {
+	return HTTPResourceModel{ID: types.Int64Value(9), Mode: types.StringValue("inference"), AIProviderIDs: providers}
+}
+
+func TestHTTPResource_ApplyAIProviders_Configured(t *testing.T) {
 	r, stub := newAIProviderStubResource(t, 1, 2)
-	plan := HTTPResourceModel{
-		ID:            types.Int64Value(9),
-		Mode:          types.StringValue("inference"),
-		AIProviderIDs: types.SetValueMust(types.Int64Type, []attr.Value{types.Int64Value(2), types.Int64Value(3)}),
-	}
-	if diags := r.syncAIProviders(ctx, 9, plan); diags.HasError() {
+	m := inferenceModel(int64Set(2, 3))
+	if diags := r.applyAIProviders(context.Background(), &m, int64Set(1, 2), true); diags.HasError() {
 		t.Fatal(diags)
 	}
-	if strings.Join(stub.calls, ",") != "add:3,remove:1" {
-		t.Errorf("calls = %v", stub.calls)
+	// One list, then the writes; no second list after a successful sync.
+	if got := strings.Join(stub.calls, ","); got != "list,add:3,remove:1" {
+		t.Errorf("calls = %v", got)
 	}
-	if diags := r.refreshAIProviders(ctx, &plan); diags.HasError() {
-		t.Fatal(diags)
-	}
-	want := types.SetValueMust(types.Int64Type, []attr.Value{types.Int64Value(2), types.Int64Value(3)})
-	if !plan.AIProviderIDs.Equal(want) {
-		t.Errorf("ai_provider_ids = %v, want %v", plan.AIProviderIDs, want)
+	if !m.AIProviderIDs.Equal(int64Set(2, 3)) {
+		t.Errorf("ai_provider_ids = %v", m.AIProviderIDs)
 	}
 }
 
-func TestHTTPResource_SyncAIProviders_NullPlanLeavesAttachments(t *testing.T) {
+func TestHTTPResource_ApplyAIProviders_AfterCreateAttachesMissing(t *testing.T) {
+	// The server attached only provider 1 of the create body [1, 2].
 	r, stub := newAIProviderStubResource(t, 1)
-	plan := HTTPResourceModel{
-		ID:            types.Int64Value(9),
-		Mode:          types.StringValue("inference"),
-		AIProviderIDs: types.SetNull(types.Int64Type),
+	m := inferenceModel(int64Set(1, 2))
+	if diags := r.applyAIProviders(context.Background(), &m, int64Set(1, 2), true); diags.HasError() {
+		t.Fatal(diags)
 	}
-	if diags := r.syncAIProviders(context.Background(), 9, plan); diags.HasError() {
+	if got := strings.Join(stub.calls, ","); got != "list,add:2" {
+		t.Errorf("calls = %v", got)
+	}
+}
+
+func TestHTTPResource_ApplyAIProviders_UnsetNeverTouchesServer(t *testing.T) {
+	// Provider 2 was attached out of band; the attribute is not in the
+	// configuration, so the planned (prior) value is kept and nothing is
+	// called, even the list.
+	r, stub := newAIProviderStubResource(t, 1, 2)
+	m := inferenceModel(int64Set(1))
+	if diags := r.applyAIProviders(context.Background(), &m, int64Set(1), false); diags.HasError() {
 		t.Fatal(diags)
 	}
 	if len(stub.calls) != 0 {
 		t.Errorf("calls = %v, want none", stub.calls)
 	}
+	if !m.AIProviderIDs.Equal(int64Set(1)) {
+		t.Errorf("ai_provider_ids = %v, want the planned [1]", m.AIProviderIDs)
+	}
 }
 
-func TestHTTPResource_RefreshAIProviders_NonInferenceIsNull(t *testing.T) {
+func TestHTTPResource_ApplyAIProviders_UnsetOnCreateReadsServer(t *testing.T) {
+	r, stub := newAIProviderStubResource(t, 4)
+	m := inferenceModel(types.SetUnknown(types.Int64Type))
+	if diags := r.applyAIProviders(context.Background(), &m, types.SetNull(types.Int64Type), false); diags.HasError() {
+		t.Fatal(diags)
+	}
+	if got := strings.Join(stub.calls, ","); got != "list" {
+		t.Errorf("calls = %v", got)
+	}
+	if !m.AIProviderIDs.Equal(int64Set(4)) {
+		t.Errorf("ai_provider_ids = %v", m.AIProviderIDs)
+	}
+}
+
+func TestHTTPResource_ApplyAIProviders_ForbiddenListUsesPrior(t *testing.T) {
+	r, stub := newAIProviderStubResource(t, 1, 5)
+	stub.listStatus = http.StatusForbidden
+	m := inferenceModel(int64Set(1, 3))
+	diags := r.applyAIProviders(context.Background(), &m, int64Set(1, 2), true)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if diags.WarningsCount() != 1 {
+		t.Errorf("warnings = %d, want 1", diags.WarningsCount())
+	}
+	// Diffed against the prior [1, 2], not the (unreadable) server list.
+	if got := strings.Join(stub.calls, ","); got != "list,add:3,remove:2" {
+		t.Errorf("calls = %v", got)
+	}
+}
+
+func TestHTTPResource_ApplyAIProviders_NonInferenceIsNull(t *testing.T) {
 	// No server: a non-inference resource must not call the API.
 	r := &HTTPResource{client: &client.Client{BaseURL: "http://127.0.0.1:1", HTTPClient: http.DefaultClient}}
-	m := HTTPResourceModel{ID: types.Int64Value(9), Mode: types.StringValue("ssh")}
-	if diags := r.refreshAIProviders(context.Background(), &m); diags.HasError() {
+	m := HTTPResourceModel{ID: types.Int64Value(9), Mode: types.StringValue("ssh"), AIProviderIDs: types.SetUnknown(types.Int64Type)}
+	if diags := r.applyAIProviders(context.Background(), &m, types.SetNull(types.Int64Type), false); diags.HasError() {
 		t.Fatal(diags)
 	}
 	if !m.AIProviderIDs.IsNull() || !m.AIProviderIDs.ElementType(context.Background()).Equal(types.Int64Type) {
@@ -340,24 +398,40 @@ func TestHTTPResource_RefreshAIProviders_NonInferenceIsNull(t *testing.T) {
 	}
 }
 
-func TestHTTPResource_RefreshAIProviders_ErrorNeverLeavesUnknown(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(client.APIResponse{Error: true, Message: "forbidden", Status: 403})
-	}))
-	t.Cleanup(srv.Close)
-	r := &HTTPResource{client: &client.Client{BaseURL: srv.URL, HTTPClient: srv.Client()}}
-	m := HTTPResourceModel{
-		ID:            types.Int64Value(9),
-		Mode:          types.StringValue("inference"),
-		AIProviderIDs: types.SetUnknown(types.Int64Type),
-	}
-	if diags := r.refreshAIProviders(context.Background(), &m); !diags.HasError() {
-		t.Fatal("expected an error diagnostic")
-	}
-	if !m.AIProviderIDs.IsNull() {
-		t.Errorf("ai_provider_ids = %v, want null after a failed read", m.AIProviderIDs)
-	}
+func TestHTTPResource_RefreshAIProviders(t *testing.T) {
+	t.Run("forbidden keeps the value with a warning", func(t *testing.T) {
+		r, stub := newAIProviderStubResource(t, 1)
+		stub.listStatus = http.StatusForbidden
+		m := inferenceModel(int64Set(1))
+		diags := r.refreshAIProviders(context.Background(), &m)
+		if diags.HasError() || diags.WarningsCount() != 1 {
+			t.Fatalf("diags = %v", diags)
+		}
+		if !m.AIProviderIDs.Equal(int64Set(1)) {
+			t.Errorf("ai_provider_ids = %v", m.AIProviderIDs)
+		}
+	})
+	t.Run("other errors fail and never leave unknown", func(t *testing.T) {
+		r, stub := newAIProviderStubResource(t)
+		stub.listStatus = http.StatusBadRequest
+		m := inferenceModel(types.SetUnknown(types.Int64Type))
+		if diags := r.refreshAIProviders(context.Background(), &m); !diags.HasError() {
+			t.Fatal("expected an error diagnostic")
+		}
+		if !m.AIProviderIDs.IsNull() {
+			t.Errorf("ai_provider_ids = %v, want null after a failed read", m.AIProviderIDs)
+		}
+	})
+	t.Run("reads the server list", func(t *testing.T) {
+		r, _ := newAIProviderStubResource(t, 2, 1)
+		m := inferenceModel(int64Set(1))
+		if diags := r.refreshAIProviders(context.Background(), &m); diags.HasError() {
+			t.Fatal(diags)
+		}
+		if !m.AIProviderIDs.Equal(int64Set(1, 2)) {
+			t.Errorf("ai_provider_ids = %v", m.AIProviderIDs)
+		}
+	})
 }
 
 func TestApplyHTTPResourceResponse_NewModes(t *testing.T) {
@@ -367,5 +441,41 @@ func TestApplyHTTPResourceResponse_NewModes(t *testing.T) {
 		if m.Mode.ValueString() != mode || m.FullDomain.ValueString() != "app.example.com" {
 			t.Errorf("mode %q: got mode=%q full_domain=%q", mode, m.Mode.ValueString(), m.FullDomain.ValueString())
 		}
+	}
+}
+
+func TestHTTPResource_CreateKeepsIDWhenFollowUpFails(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PUT" && r.URL.Path == "/v1/org/o/resource":
+			raw, _ := json.Marshal(map[string]any{"resourceId": 3, "niceId": "n", "name": "r", "mode": "rdp"})
+			_ = json.NewEncoder(w).Encode(client.APIResponse{Data: raw, Success: true, Status: 201})
+		case r.Method == "POST" && r.URL.Path == "/v1/resource/3":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(client.APIResponse{Error: true, Message: "bad field", Status: 400})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r := &HTTPResource{client: &client.Client{BaseURL: srv.URL, APIKey: "k", OrgID: "o", HTTPClient: srv.Client()}}
+
+	cfg := httpResourceConfig(t, map[string]tftypes.Value{
+		"name": tfString("r"), "mode": tfString("rdp"), "domain_id": tfString("d"),
+		"subdomain": tfString("app"), "protocol": tfString("tcp"),
+	})
+	s := httpResourceSchema(t)
+	resp := &resource.CreateResponse{State: tfsdk.State{Schema: s, Raw: tftypes.NewValue(s.Type().TerraformType(ctx), nil)}}
+	r.Create(ctx, resource.CreateRequest{Config: cfg, Plan: tfsdk.Plan{Schema: s, Raw: cfg.Raw}}, resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected the follow-up update error")
+	}
+	var id types.Int64
+	resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("id"), &id)...)
+	if id.ValueInt64() != 3 {
+		t.Errorf("id in state = %v, want 3 so Terraform taints instead of orphaning", id)
 	}
 }

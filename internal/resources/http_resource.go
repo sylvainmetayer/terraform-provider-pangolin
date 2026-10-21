@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -447,15 +448,13 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// 1.19+ mode selection. `http` (or empty, on pre-1.19) is
-	// the legacy HTTP resource; anything else is a new L4 mode
-	// gated on `HTTP: false` server-side.
-	mode := plan.Mode.ValueString()
-	if mode == "" {
-		mode = "http"
-	}
+	// buildHTTPResourceCreateRequest picks the payload per mode: domain
+	// modes (http, ssh, rdp, vnc, inference) go with `http: true`, the
+	// tcp / udp L4 modes with `http: false`.
 	createReq, diags := buildHTTPResourceCreateRequest(ctx, plan)
 	resp.Diagnostics.Append(diags...)
+	aiConfigured, d := aiProviderIDsConfigured(ctx, req.Config)
+	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -472,6 +471,14 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	plan.ID = types.Int64Value(int64(resource.ResourceID))
 	plan.NiceID = types.StringValue(resource.NiceID)
+	// Save the ID before any follow-up call: if one fails, Terraform
+	// taints the resource instead of losing track of it.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), plan.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// The providers sent in the create body are what the server holds.
+	createdProviders := plan.AIProviderIDs
 
 	// L4 resources (mode = tcp/udp) reject almost every scalar on
 	// the follow-up POST /resource/{id} - only `name`, `enabled`,
@@ -481,7 +488,7 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// inference) share the server's HTTP update handler and keep the
 	// historical Create + Update pattern so user-set sso/ssl/etc. are
 	// pushed.
-	if resourceModeUsesDomain(mode) {
+	if resourceModeUsesDomain(plan.Mode.ValueString()) {
 		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), buildHTTPResourceUpdateRequest(plan))
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
@@ -491,7 +498,7 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	} else {
 		plan = applyHTTPResourceResponse(plan, resource)
 	}
-	resp.Diagnostics.Append(r.refreshAIProviders(ctx, &plan)...)
+	resp.Diagnostics.Append(r.applyAIProviders(ctx, &plan, createdProviders, aiConfigured)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -518,8 +525,11 @@ func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 }
 
 func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan HTTPResourceModel
+	var plan, prior HTTPResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	aiConfigured, d := aiProviderIDsConfigured(ctx, req.Config)
+	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -542,8 +552,7 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	plan = applyHTTPResourceResponse(plan, res)
-	resp.Diagnostics.Append(r.syncAIProviders(ctx, int(plan.ID.ValueInt64()), plan)...)
-	resp.Diagnostics.Append(r.refreshAIProviders(ctx, &plan)...)
+	resp.Diagnostics.Append(r.applyAIProviders(ctx, &plan, prior.AIProviderIDs, aiConfigured)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

@@ -125,7 +125,7 @@ resource "pangolin_resource" "under_maintenance" {
 
 ### Optional
 
-- `ai_provider_ids` (Set of Number) IDs of the AI providers attached to an `inference` resource (Pangolin >= 1.22). Providers are attached in inherit mode, using each provider's own allow/block lists. Leave unset to keep whatever is attached on the server; set `[]` to detach every provider. Only valid with `mode = "inference"`. Reading it needs the API key to be allowed to list the resource's AI models.
+- `ai_provider_ids` (Set of Number) IDs of the AI providers attached to an `inference` resource (Pangolin >= 1.22). Providers are attached in inherit mode, using each provider's own allow/block lists. When set, the attachments on the server are made to match it (providers attached out of band are detached); set `[]` to detach every provider. Leave unset to never touch the attachments: the value then only reports what the server holds. Only valid with `mode = "inference"`. Reading it needs the API key to be allowed to list the resource's AI models; without that permission the last known value is kept and a warning is shown.
 - `apply_rules` (Boolean) Enable evaluation of access rules on this resource.
 - `auth_daemon_mode` (String) Auth-daemon deployment mode for SSH resources. One of `site`, `remote` or `native`.
 - `auth_daemon_port` (Number) TCP port the auth daemon listens on when `auth_daemon_mode` is set.

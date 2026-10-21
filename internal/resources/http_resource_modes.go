@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
@@ -22,31 +24,49 @@ import (
 var _ resource.ResourceWithConfigValidators = &HTTPResource{}
 
 // resourceModes lists every mode PUT /org/{org}/resource accepts on
-// Pangolin 1.24. `ssh` / `rdp` / `vnc` exist since 1.20, `inference`
-// since 1.22.
+// Pangolin 1.24, in documentation order. `ssh` / `rdp` / `vnc` exist
+// since 1.20, `inference` since 1.22.
 var resourceModes = []string{"http", "ssh", "rdp", "vnc", "inference", "tcp", "udp"}
 
-// resourceModeUsesDomain reports whether a mode is addressed by a
-// domain. Those modes share the server's HTTP create and update
-// handlers (updateHttpResource); only tcp / udp take the raw L4 path.
-// An empty mode is the `http` default.
-func resourceModeUsesDomain(mode string) bool {
-	switch mode {
-	case "", "http", "ssh", "rdp", "vnc", "inference":
-		return true
+// resourceModeTraits says how the server handles one resource mode.
+type resourceModeTraits struct {
+	// usesDomain: the resource is addressed by a domain, created with
+	// `http: true` and updated through the server's HTTP handler
+	// (updateHttpResource). Only tcp / udp take the raw L4 path.
+	usesDomain bool
+	// requiresDomain: create needs domain_id and refuses proxy_port.
+	// `http` keeps its historical behavior (server-side 400) instead.
+	requiresDomain bool
+}
+
+var resourceModeTable = map[string]resourceModeTraits{
+	"http":      {usesDomain: true},
+	"ssh":       {usesDomain: true, requiresDomain: true},
+	"rdp":       {usesDomain: true, requiresDomain: true},
+	"vnc":       {usesDomain: true, requiresDomain: true},
+	"inference": {usesDomain: true, requiresDomain: true},
+	"tcp":       {},
+	"udp":       {},
+}
+
+// resourceModeOf returns the effective mode: an empty mode is the
+// `http` default.
+func resourceModeOf(mode string) string {
+	if mode == "" {
+		return "http"
 	}
-	return false
+	return mode
+}
+
+// resourceModeUsesDomain reports whether a mode is addressed by a domain.
+func resourceModeUsesDomain(mode string) bool {
+	return resourceModeTable[resourceModeOf(mode)].usesDomain
 }
 
 // resourceModeRequiresDomain reports the modes whose create requires a
-// domain_id and refuses proxy_port. `http` is left out on purpose: its
-// historical behavior (server-side 400) is unchanged.
+// domain_id and refuses proxy_port.
 func resourceModeRequiresDomain(mode string) bool {
-	switch mode {
-	case "ssh", "rdp", "vnc", "inference":
-		return true
-	}
-	return false
+	return resourceModeTable[resourceModeOf(mode)].requiresDomain
 }
 
 // addResourceModeAttributes adds the mode-specific attributes to the
@@ -55,9 +75,12 @@ func addResourceModeAttributes(attrs map[string]schema.Attribute) {
 	attrs["ai_provider_ids"] = schema.SetAttribute{
 		Description: "IDs of the AI providers attached to an `inference` resource (Pangolin >= 1.22). " +
 			"Providers are attached in inherit mode, using each provider's own allow/block lists. " +
-			"Leave unset to keep whatever is attached on the server; set `[]` to detach every " +
-			"provider. Only valid with `mode = \"inference\"`. Reading it needs the API key to be " +
-			"allowed to list the resource's AI models.",
+			"When set, the attachments on the server are made to match it (providers attached out " +
+			"of band are detached); set `[]` to detach every provider. Leave unset to never touch " +
+			"the attachments: the value then only reports what the server holds. Only valid with " +
+			"`mode = \"inference\"`. Reading it needs the API key to be allowed to list the " +
+			"resource's AI models; without that permission the last known value is kept and a " +
+			"warning is shown.",
 		ElementType: types.Int64Type,
 		Optional:    true,
 		Computed:    true,
@@ -92,10 +115,7 @@ func (v resourceModeConfigValidator) ValidateResource(ctx context.Context, req r
 	if resp.Diagnostics.HasError() || mode.IsUnknown() {
 		return
 	}
-	m := mode.ValueString()
-	if mode.IsNull() {
-		m = "http"
-	}
+	m := resourceModeOf(mode.ValueString())
 
 	var domainID types.String
 	var proxyPort types.Int64
@@ -118,9 +138,11 @@ func (v resourceModeConfigValidator) ValidateResource(ctx context.Context, req r
 		}
 	}
 
-	if m != "inference" && !providers.IsNull() && !providers.IsUnknown() && len(providers.Elements()) > 0 {
+	// `[]` is refused too: the attribute is always null outside
+	// inference, so an empty set could never match the applied value.
+	if m != "inference" && !providers.IsNull() && !providers.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(path.Root("ai_provider_ids"), "Unsupported ai_provider_ids",
-			fmt.Sprintf("AI providers can only be attached to `mode = \"inference\"` resources, not to `mode = %q`.", m))
+			fmt.Sprintf("`ai_provider_ids` only applies to `mode = \"inference\"` resources, not to `mode = %q`. Remove it.", m))
 	}
 }
 
@@ -130,10 +152,7 @@ func (v resourceModeConfigValidator) ValidateResource(ctx context.Context, req r
 // modes keep the legacy `http: false` + protocol pair.
 func buildHTTPResourceCreateRequest(ctx context.Context, plan HTTPResourceModel) (*client.CreateResourceRequest, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	mode := plan.Mode.ValueString()
-	if mode == "" {
-		mode = "http"
-	}
+	mode := resourceModeOf(plan.Mode.ValueString())
 	req := &client.CreateResourceRequest{
 		Name:     plan.Name.ValueString(),
 		HTTP:     resourceModeUsesDomain(mode),
@@ -161,35 +180,76 @@ func buildHTTPResourceCreateRequest(ctx context.Context, plan HTTPResourceModel)
 	return req, diags
 }
 
-// syncAIProviders makes the providers attached on the server match the
-// planned ai_provider_ids of an inference resource. The server list is
-// the reference, so providers attached out of band are detached too.
-// A null or unknown plan value leaves the attachments alone.
-func (r *HTTPResource) syncAIProviders(ctx context.Context, resourceID int, plan HTTPResourceModel) diag.Diagnostics {
+// aiProviderIDsConfigured reports whether ai_provider_ids is set in the
+// configuration. Only then does the provider manage the attachments.
+func aiProviderIDsConfigured(ctx context.Context, config tfsdk.Config) (bool, diag.Diagnostics) {
+	var v types.Set
+	diags := config.GetAttribute(ctx, path.Root("ai_provider_ids"), &v)
+	return !v.IsNull(), diags
+}
+
+// applyAIProviders sets ai_provider_ids on m after a create or update.
+// Outside inference it is always null. When the attribute is set in the
+// configuration, the server attachments are made to match it (attach
+// missing, detach extra) and the planned value is kept, so no second
+// read is needed. When it is unset, the attachments are never touched:
+// the planned value (the prior state, through UseStateForUnknown) is
+// kept, or read from the server when it is still unknown (create).
+//
+// prior is the value the server is believed to hold: the state on
+// update, the providers sent in the create body on create. It is the
+// fallback when the API key cannot list the attachments (403), and the
+// value kept when an attach or detach call fails.
+func (r *HTTPResource) applyAIProviders(ctx context.Context, m *HTTPResourceModel, prior types.Set, configured bool) diag.Diagnostics {
 	var diags diag.Diagnostics
-	if plan.Mode.ValueString() != "inference" || plan.AIProviderIDs.IsNull() || plan.AIProviderIDs.IsUnknown() {
+	if m.Mode.ValueString() != "inference" {
+		m.AIProviderIDs = types.SetNull(types.Int64Type)
 		return diags
 	}
-	want, d := aiProviderIDsFromSet(ctx, plan.AIProviderIDs)
+	if !configured || m.AIProviderIDs.IsUnknown() {
+		if m.AIProviderIDs.IsUnknown() {
+			return r.refreshAIProviders(ctx, m)
+		}
+		return diags
+	}
+
+	want, d := aiProviderIDsFromSet(ctx, m.AIProviderIDs)
 	diags.Append(d...)
 	if diags.HasError() {
 		return diags
 	}
+	resourceID := int(m.ID.ValueInt64())
 	current, err := r.client.ListResourceAIProviders(ctx, resourceID)
 	if err != nil {
-		diags.AddError("Failed to list resource AI providers", err.Error())
-		return diags
+		if !errors.Is(err, client.ErrForbidden) {
+			diags.AddError("Failed to list resource AI providers", err.Error())
+			m.AIProviderIDs = knownSetOrNull(prior)
+			return diags
+		}
+		diags.AddWarning("Cannot list resource AI providers",
+			"The API key is not allowed to list the resource's AI models, so ai_provider_ids is "+
+				"reconciled against the last known value instead of the server list. Providers "+
+				"attached outside Terraform are not detected. Error: "+err.Error())
+		ids, d := aiProviderIDsFromSet(ctx, prior)
+		diags.Append(d...)
+		current = make([]client.ResourceAIProvider, len(ids))
+		for i, id := range ids {
+			current[i] = client.ResourceAIProvider{ProviderID: id}
+		}
 	}
+
 	toAdd, toRemove := diffAIProviderIDs(want, current)
 	for _, id := range toAdd {
 		if err := r.client.AddResourceAIProvider(ctx, resourceID, id); err != nil {
 			diags.AddError("Failed to attach AI provider", fmt.Sprintf("provider %d: %s", id, err))
+			m.AIProviderIDs = knownSetOrNull(prior)
 			return diags
 		}
 	}
 	for _, id := range toRemove {
 		if err := r.client.RemoveResourceAIProvider(ctx, resourceID, id); err != nil {
 			diags.AddError("Failed to detach AI provider", fmt.Sprintf("provider %d: %s", id, err))
+			m.AIProviderIDs = knownSetOrNull(prior)
 			return diags
 		}
 	}
@@ -197,7 +257,9 @@ func (r *HTTPResource) syncAIProviders(ctx context.Context, resourceID int, plan
 }
 
 // refreshAIProviders reads ai_provider_ids back from the server for
-// inference resources and sets it to null for every other mode.
+// inference resources and sets it to null for every other mode. When the
+// API key cannot list the attachments (403), the current value is kept
+// with a warning instead of failing the read.
 func (r *HTTPResource) refreshAIProviders(ctx context.Context, m *HTTPResourceModel) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if m.Mode.ValueString() != "inference" {
@@ -206,15 +268,27 @@ func (r *HTTPResource) refreshAIProviders(ctx context.Context, m *HTTPResourceMo
 	}
 	providers, err := r.client.ListResourceAIProviders(ctx, int(m.ID.ValueInt64()))
 	if err != nil {
-		diags.AddError("Failed to list resource AI providers", err.Error())
-		// State must never hold an unknown value, even on error.
-		if m.AIProviderIDs.IsUnknown() {
-			m.AIProviderIDs = types.SetNull(types.Int64Type)
+		if errors.Is(err, client.ErrForbidden) {
+			diags.AddWarning("Cannot read resource AI providers",
+				"The API key is not allowed to list the resource's AI models; the last known "+
+					"ai_provider_ids is kept. Error: "+err.Error())
+		} else {
+			diags.AddError("Failed to list resource AI providers", err.Error())
 		}
+		// State must never hold an unknown value, even on error.
+		m.AIProviderIDs = knownSetOrNull(m.AIProviderIDs)
 		return diags
 	}
 	m.AIProviderIDs = aiProviderIDSet(providers)
 	return diags
+}
+
+// knownSetOrNull returns s, or a typed null when s is unknown.
+func knownSetOrNull(s types.Set) types.Set {
+	if s.IsUnknown() {
+		return types.SetNull(types.Int64Type)
+	}
+	return s
 }
 
 // diffAIProviderIDs returns the provider IDs to attach and to detach,
