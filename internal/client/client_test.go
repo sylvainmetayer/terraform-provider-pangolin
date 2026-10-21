@@ -4483,9 +4483,9 @@ func TestResource_EffectiveRequestHeaders_Precedence(t *testing.T) {
 		res  Resource
 		want []ResourceHeader
 	}{
-		{"pre-1.24 headers only", Resource{Headers: legacy}, legacy},
-		{"1.24 requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{{Name: "X-New", Value: "2"}}}, []ResourceHeader{{Name: "X-New", Value: "2"}}},
-		{"1.24 empty requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{}}, nil},
+		{"pre-1.24 headers only", Resource{Headers: legacy, HasHeadersKey: true}, legacy},
+		{"1.24 requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{{Name: "X-New", Value: "2"}}, HasRequestHeadersKey: true}, []ResourceHeader{{Name: "X-New", Value: "2"}}},
+		{"1.24 empty requestHeaders wins", Resource{Headers: legacy, RequestHeaders: ResourceHeaders{}, HasRequestHeadersKey: true}, nil},
 		{"1.24 null requestHeaders ignores headers", Resource{Headers: legacy, HasRequestHeadersKey: true}, nil},
 		{"neither", Resource{}, nil},
 	}
@@ -4632,17 +4632,19 @@ func TestUpdateResource_124ResponseHeaders(t *testing.T) {
 
 func TestResource_HasRequestHeadersKey(t *testing.T) {
 	cases := []struct {
-		name      string
-		raw       string
-		wantKey   bool
-		wantCount int
-		wantSSO   bool
+		name        string
+		raw         string
+		wantKey     bool
+		wantReports bool
+		wantCount   int
+		wantSSO     bool
 	}{
-		{"pre-1.24 row, headers string", `{"resourceId":1,"headers":"[{\"name\":\"X-A\",\"value\":\"1\"}]","sso":1}`, false, 1, true},
-		{"pre-1.24 row, no header key", `{"resourceId":1}`, false, 0, false},
-		{"1.24 GET, requestHeaders null", `{"resourceId":1,"requestHeaders":null,"responseHeaders":null}`, true, 0, false},
-		{"1.24 GET, requestHeaders array", `{"resourceId":1,"requestHeaders":[{"name":"X-A","value":"1"}],"sso":true}`, true, 1, true},
-		{"1.24 row, requestHeaders string", `{"resourceId":1,"requestHeaders":"[{\"name\":\"X-A\",\"value\":\"1\"}]"}`, true, 1, false},
+		{"pre-1.24 row, headers string", `{"resourceId":1,"headers":"[{\"name\":\"X-A\",\"value\":\"1\"}]","sso":1}`, false, true, 1, true},
+		{"pre-1.24 row, headers null", `{"resourceId":1,"headers":null}`, false, true, 0, false},
+		{"no header key", `{"resourceId":1}`, false, false, 0, false},
+		{"1.24 GET, requestHeaders null", `{"resourceId":1,"requestHeaders":null,"responseHeaders":null}`, true, true, 0, false},
+		{"1.24 GET, requestHeaders array", `{"resourceId":1,"requestHeaders":[{"name":"X-A","value":"1"}],"sso":true}`, true, true, 1, true},
+		{"1.24 row, requestHeaders string", `{"resourceId":1,"requestHeaders":"[{\"name\":\"X-A\",\"value\":\"1\"}]"}`, true, true, 1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4652,6 +4654,9 @@ func TestResource_HasRequestHeadersKey(t *testing.T) {
 			}
 			if r.HasRequestHeadersKey != tc.wantKey {
 				t.Errorf("HasRequestHeadersKey = %v, want %v", r.HasRequestHeadersKey, tc.wantKey)
+			}
+			if r.ReportsRequestHeaders() != tc.wantReports {
+				t.Errorf("ReportsRequestHeaders = %v, want %v", r.ReportsRequestHeaders(), tc.wantReports)
 			}
 			if got := r.EffectiveRequestHeaders(); len(got) != tc.wantCount {
 				t.Errorf("EffectiveRequestHeaders = %+v, want %d entries", got, tc.wantCount)
@@ -4672,13 +4677,16 @@ func TestResource_HasRequestHeadersKey(t *testing.T) {
 	}
 }
 
-func TestUpdateResourceRequest_RequestHeadersKey(t *testing.T) {
-	empty := []ResourceHeader{}
-	raw, err := json.Marshal(&UpdateResourceRequest{Name: "web", RequestHeaders: &empty})
+func TestUpdateResourceRequest_HeadersKeyOnly(t *testing.T) {
+	// Request headers always go out under `headers`, which every 1.19+
+	// server reads (1.24 as an alias of `requestHeaders`, a key
+	// pre-1.24 servers refuse).
+	hs := []ResourceHeader{{Name: "X-Env", Value: "prod"}}
+	raw, err := json.Marshal(&UpdateResourceRequest{Name: "web", Headers: &hs})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(raw), `"requestHeaders":[]`) || strings.Contains(string(raw), `"headers"`) {
-		t.Errorf("payload = %s, want requestHeaders:[] and no headers key", raw)
+	if !strings.Contains(string(raw), `"headers":[{"name":"X-Env","value":"prod"}]`) || strings.Contains(string(raw), `"requestHeaders"`) {
+		t.Errorf("payload = %s, want headers and no requestHeaders key", raw)
 	}
 }

@@ -10,7 +10,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -302,17 +301,17 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"headers": schema.ListNestedAttribute{
-				Description: "Static request headers injected on the upstream request - list of `{name, value}` objects " +
-					"(sent as `requestHeaders` to Pangolin >= 1.24, as `headers` to older servers). Only for `mode = \"http\"`. " +
-					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
-					"on the next apply when the attribute is absent from the config, as are the ones it no longer lists. " +
-					"Removing the attribute, or setting it to `[]`, clears the headers on the server. Cannot be marked " +
-					"Computed because the Go slice model type in the plugin framework does not carry an \"unknown\" sentinel.",
+				Description: "Static request headers injected on the upstream request - list of `{name, value}` objects. " +
+					"Only for `mode = \"http\"`. This attribute is authoritative: headers set outside Terraform (e.g. in " +
+					"the Pangolin UI) are removed on the next apply when the attribute is absent from the config, as are the " +
+					"ones it no longer lists. Removing the attribute, or setting it to `[]`, clears the headers on the server. " +
+					"Header values are sensitive. Cannot be marked Computed because the Go slice model type in the plugin " +
+					"framework does not carry an \"unknown\" sentinel.",
 				Optional: true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name":  schema.StringAttribute{Description: "Header name.", Required: true},
-						"value": schema.StringAttribute{Description: "Header value.", Required: true},
+						"value": schema.StringAttribute{Description: "Header value.", Required: true, Sensitive: true},
 					},
 				},
 			},
@@ -321,12 +320,15 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					"objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. Only for `mode = \"http\"`. " +
 					"This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed " +
 					"on the next apply when the attribute is absent from the config. " +
-					"Removing the attribute, or setting it to `[]`, clears the headers on the server.",
+					"Removing the attribute, or setting it to `[]`, clears the headers on the server. Limitation: the " +
+					"clear is only sent when the prior state holds response headers (older servers refuse the key), so " +
+					"headers added outside Terraform are only removed by an apply that refreshed first (not with " +
+					"`-refresh=false`). Header values are sensitive.",
 				Optional: true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name":  schema.StringAttribute{Description: "Header name.", Required: true},
-						"value": schema.StringAttribute{Description: "Header value.", Required: true},
+						"value": schema.StringAttribute{Description: "Header value.", Required: true, Sensitive: true},
 					},
 				},
 			},
@@ -508,9 +510,7 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// Update round-trip. L7 (http) still uses the historical
 	// Create + Update pattern so user-set sso/ssl/etc. are pushed.
 	if mode == "http" {
-		updateReq := buildHTTPResourceUpdateRequest(plan)
-		useRequestHeadersKey(updateReq, resource.HasRequestHeadersKey)
-		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), updateReq)
+		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), buildHTTPResourceUpdateRequest(plan))
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
 			r.rollBackCreate(ctx, int(plan.ID.ValueInt64()), resp)
@@ -520,7 +520,6 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 	plan = applyHTTPResourceResponse(plan, resource)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, resource)...)
 }
 
 // rollBackCreate deletes a resource whose follow-up settings update
@@ -528,9 +527,17 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 // state (the next apply would create a duplicate, or fail on the
 // subdomain). If the delete fails too, only the ID is saved: Terraform
 // marks the resource tainted and replaces it on the next apply.
+// Either way the next apply recreates the resource, so a rollback is
+// also right when the update did reach the server (e.g. a response
+// that failed to decode).
 func (r *HTTPResource) rollBackCreate(ctx context.Context, id int, resp *resource.CreateResponse) {
 	err := r.client.DeleteResource(ctx, id)
 	if err == nil {
+		resp.Diagnostics.AddWarning(
+			"Partially created resource rolled back",
+			fmt.Sprintf("Resource %d was created but its settings could not be applied, so it was deleted again. "+
+				"The next apply creates it from scratch.", id),
+		)
 		return
 	}
 	resp.Diagnostics.AddError(
@@ -541,10 +548,12 @@ func (r *HTTPResource) rollBackCreate(ctx context.Context, id int, resp *resourc
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), types.Int64Value(int64(id)))...)
 }
 
-// ValidateConfig rejects header lists on L4 modes: the tcp / udp update
-// body has no header keys and the provider never sends them there, so
-// the configured value would never reach the server and the apply
-// would end with an inconsistent result.
+// ValidateConfig rejects non-empty header lists on L4 modes: the tcp /
+// udp update body has no header keys and the provider never sends them
+// there, so the configured value would never reach the server and the
+// apply would end with an inconsistent result. An empty list, or a
+// value still unknown at validation, is left alone: it round-trips as
+// is (and Terraform validates the config again once it is known).
 func (r *HTTPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var mode types.String
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("mode"), &mode)...)
@@ -554,7 +563,7 @@ func (r *HTTPResource) ValidateConfig(ctx context.Context, req resource.Validate
 	for _, attr := range []string{"headers", "response_headers"} {
 		var hs types.List
 		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(attr), &hs)...)
-		if !hs.IsNull() {
+		if !hs.IsNull() && !hs.IsUnknown() && len(hs.Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root(attr),
 				"Headers not supported in L4 mode",
@@ -583,7 +592,6 @@ func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 	state = applyHTTPResourceResponse(state, resource)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, resource)...)
 }
 
 func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -600,12 +608,6 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// have written anyway.
 	updateReq := buildHTTPResourceUpdateRequest(plan)
 	clearRemovedHeaders(updateReq, plan, state)
-	// The flag comes from the last refresh. Known limitation: after a
-	// server downgrade from 1.24, an apply with -refresh=false still
-	// sends `requestHeaders` and gets a 400; a normal refresh fixes it.
-	hasKey, diags := requestHeadersKeyFromPrivate(ctx, req.Private)
-	resp.Diagnostics.Append(diags...)
-	useRequestHeadersKey(updateReq, hasKey)
 	if plan.Mode.ValueString() != "http" {
 		updateReq = &client.UpdateResourceRequest{
 			Name:    plan.Name.ValueString(),
@@ -620,7 +622,6 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	plan = applyHTTPResourceResponse(plan, res)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, res)...)
 }
 
 func (r *HTTPResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -653,7 +654,6 @@ func (r *HTTPResource) ImportState(ctx context.Context, req resource.ImportState
 	state := HTTPResourceModel{ID: types.Int64Value(int64(res.ResourceID))}
 	state = applyHTTPResourceResponse(state, res)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-	resp.Diagnostics.Append(setRequestHeadersKeyPrivate(ctx, resp.Private, res)...)
 }
 
 // buildHTTPResourceUpdateRequest builds an UpdateResourceRequest from the model,
@@ -790,20 +790,22 @@ func isNullList(hs []ResourceHeaderModel) bool {
 	return hs == nil
 }
 
-// clearRemovedHeaders turns a header list removed from the config into
+// clearRemovedHeaders turns a header list absent from the config into
 // an explicit clear. buildHTTPResourceUpdateRequest leaves a null
 // `headers` off the payload, which the server reads as "unchanged", so
 // without this the injected headers survived their removal and the
 // plan showed the same diff forever. An empty list clears them on
 // every 1.19+ server (up to 1.23 it is stored as "[]", 1.24 stores
-// null). Nothing is sent when the prior state had no headers, so a
-// resource that never used the attribute keeps a minimal payload.
+// null). It is sent on every update, whatever the prior state holds,
+// so headers added outside Terraform are removed even by an apply
+// that skipped the refresh.
 //
-// Response headers (1.24+ only) are cleared with `null` the same way;
-// the key is never sent to a server that never reported any, so
-// pre-1.24 servers, which refuse it, are unaffected.
+// Response headers (1.24+ only) are cleared with `null`, which the
+// 1.24 schema accepts (`.nullable().optional()`). That key is only
+// sent when the prior state had response headers: pre-1.24 servers
+// refuse it, and they never report any.
 func clearRemovedHeaders(req *client.UpdateResourceRequest, plan, state HTTPResourceModel) {
-	if isNullList(plan.Headers) && len(state.Headers) > 0 {
+	if isNullList(plan.Headers) {
 		empty := []client.ResourceHeader{}
 		req.Headers = &empty
 	}
@@ -811,50 +813,6 @@ func clearRemovedHeaders(req *client.UpdateResourceRequest, plan, state HTTPReso
 		var none []client.ResourceHeader
 		req.ResponseHeaders = &none
 	}
-}
-
-// privateKeyRequestHeaders is the private-state key remembering
-// whether the server answered with the 1.24+ `requestHeaders` key.
-const privateKeyRequestHeaders = "request_headers_key"
-
-// privateState is the subset of the framework's private state used
-// here (resp.Private / req.Private), so tests can fake it.
-type privateState interface {
-	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
-	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
-}
-
-// setRequestHeadersKeyPrivate records, from the last resource response,
-// whether the server is a 1.24+ one (see client.Resource.HasRequestHeadersKey).
-// Every Create / Read / Update / Import refreshes it, so Update can
-// pick the write key without an extra GET.
-func setRequestHeadersKeyPrivate(ctx context.Context, p privateState, res *client.Resource) diag.Diagnostics {
-	v := []byte("false")
-	if res.HasRequestHeadersKey {
-		v = []byte("true")
-	}
-	return p.SetKey(ctx, privateKeyRequestHeaders, v)
-}
-
-// requestHeadersKeyFromPrivate reads the flag back. A missing key
-// (state written by an older provider version, never refreshed since)
-// means false: `headers` is accepted by every 1.19+ server, 1.24
-// included (deprecated alias).
-func requestHeadersKeyFromPrivate(ctx context.Context, p privateState) (bool, diag.Diagnostics) {
-	v, diags := p.GetKey(ctx, privateKeyRequestHeaders)
-	return string(v) == "true", diags
-}
-
-// useRequestHeadersKey moves the request headers of the payload to the
-// 1.24+ `requestHeaders` key when the server has it. `headers` is only
-// a deprecated alias there; pre-1.24 servers refuse `requestHeaders`.
-// An explicit empty list is moved as is: 1.24 stores it as null.
-func useRequestHeadersKey(req *client.UpdateResourceRequest, hasKey bool) {
-	if !hasKey || req.Headers == nil {
-		return
-	}
-	req.RequestHeaders = req.Headers
-	req.Headers = nil
 }
 
 // headersToWire maps configured headers to the wire shape.
@@ -963,9 +921,12 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	m.DefaultResourcePolicyID = tfconv.Int64FromIntPtr(res.DefaultResourcePolicyID)
 
 	// Headers - round-trip the list, read from `requestHeaders` on
-	// 1.24+ and from `headers` before. An absent/empty wire list maps
-	// to null, see headerModelsFromWire.
-	m.Headers = headerModelsFromWire(m.Headers, res.EffectiveRequestHeaders())
+	// 1.24+ and from `headers` before. An empty wire list maps to
+	// null, see headerModelsFromWire. A response carrying neither key
+	// says nothing about them, so the known value is kept.
+	if res.ReportsRequestHeaders() {
+		m.Headers = headerModelsFromWire(m.Headers, res.EffectiveRequestHeaders())
+	}
 	m.ResponseHeaders = headerModelsFromWire(m.ResponseHeaders, res.ResponseHeaders)
 	return m
 }

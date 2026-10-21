@@ -84,6 +84,29 @@ func TestHTTPResource_ValidateConfig_Headers(t *testing.T) {
 	}
 }
 
+func TestHTTPResource_ValidateConfig_L4EmptyOrUnknownHeaders(t *testing.T) {
+	// An explicit empty list round-trips as is, and an unknown value
+	// (e.g. a module variable) is validated again once known.
+	_, typ := httpResourceSchema(t)
+	lt := typ.AttributeTypes["headers"].(tftypes.List)
+	for name, v := range map[string]tftypes.Value{
+		"empty":   tftypes.NewValue(lt, []tftypes.Value{}),
+		"unknown": tftypes.NewValue(lt, tftypes.UnknownValue),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := httpResourceConfig(t, map[string]tftypes.Value{
+				"mode":    tftypes.NewValue(tftypes.String, "tcp"),
+				"headers": v,
+			})
+			var resp resource.ValidateConfigResponse
+			(&HTTPResource{}).ValidateConfig(context.Background(), resource.ValidateConfigRequest{Config: cfg}, &resp)
+			if resp.Diagnostics.HasError() {
+				t.Errorf("unexpected error: %v", resp.Diagnostics)
+			}
+		})
+	}
+}
+
 func TestHTTPResource_ValidateConfig_L4WithoutHeaders(t *testing.T) {
 	cfg := httpResourceConfig(t, map[string]tftypes.Value{
 		"mode": tftypes.NewValue(tftypes.String, "tcp"),
@@ -130,6 +153,9 @@ func TestHTTPResource_RollBackCreate_DeletesResource(t *testing.T) {
 	}
 	if resp.Diagnostics.HasError() {
 		t.Errorf("unexpected error: %v", resp.Diagnostics)
+	}
+	if resp.Diagnostics.WarningsCount() != 1 {
+		t.Errorf("expected one warning telling the resource was rolled back, got %v", resp.Diagnostics)
 	}
 	if !resp.State.Raw.IsNull() {
 		t.Errorf("state should stay empty after a successful rollback")
