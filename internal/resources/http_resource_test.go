@@ -28,6 +28,7 @@ func TestApplyHTTPResourceResponse_NominalHTTP(t *testing.T) {
 		Subdomain:                "app",
 		FullDomain:               "app.example.com",
 		DomainID:                 "dom-1",
+		Protocol:                 "tcp",
 		Wildcard:                 true,
 		Health:                   "healthy",
 		Mode:                     "http",
@@ -74,6 +75,9 @@ func TestApplyHTTPResourceResponse_NominalHTTP(t *testing.T) {
 	}
 	if got := m.DomainID.ValueString(); got != "dom-1" {
 		t.Errorf("DomainID = %q", got)
+	}
+	if got := m.Protocol.ValueString(); got != "tcp" {
+		t.Errorf("Protocol = %q, want tcp", got)
 	}
 	if !m.SSO.ValueBool() || !m.SSL.ValueBool() || !m.Enabled.ValueBool() {
 		t.Errorf("SSO/SSL/Enabled expected true, got %v/%v/%v",
@@ -173,6 +177,9 @@ func TestApplyHTTPResourceResponse_NilPointersAreNull(t *testing.T) {
 	if got := m.Mode.ValueString(); got != "http" {
 		t.Errorf("Mode default = %q, want http", got)
 	}
+	if got := m.Protocol.ValueString(); got != "tcp" {
+		t.Errorf("Protocol default = %q, want tcp", got)
+	}
 	if !m.PamMode.IsNull() {
 		t.Errorf("PamMode expected null")
 	}
@@ -259,6 +266,51 @@ func TestApplyHTTPResourceResponse_L4TCPMode(t *testing.T) {
 	}
 	if got := m.AuthDaemonPort.ValueInt64(); got != 9000 {
 		t.Errorf("AuthDaemonPort = %d", got)
+	}
+}
+
+// Import: no prior protocol, so it is derived from mode.
+func TestApplyHTTPResourceResponse_ImportDerivesProtocolFromMode(t *testing.T) {
+	for _, tc := range []struct{ mode, want string }{
+		{"udp", "udp"},
+		{"tcp", "tcp"},
+		{"http", "tcp"},
+	} {
+		res := &client.Resource{ResourceID: 56, Name: "x", Mode: tc.mode}
+		m := applyHTTPResourceResponse(HTTPResourceModel{ID: types.Int64Value(56)}, res)
+		if got := m.Protocol.ValueString(); got != tc.want {
+			t.Errorf("mode %s: Protocol = %q, want %q", tc.mode, got, tc.want)
+		}
+	}
+}
+
+// L4 resources: protocol follows mode on Create, Read and Import alike,
+// whatever the prior value, so the three paths agree.
+func TestApplyHTTPResourceResponse_L4ProtocolFollowsMode(t *testing.T) {
+	for _, tc := range []struct{ mode, prior string }{
+		{"udp", "tcp"},
+		{"tcp", "udp"},
+	} {
+		res := &client.Resource{ResourceID: 57, Name: "x", Mode: tc.mode}
+		plan := HTTPResourceModel{ID: types.Int64Value(57), Protocol: types.StringValue(tc.prior)}
+		m := applyHTTPResourceResponse(plan, res)
+		if got := m.Protocol.ValueString(); got != tc.mode {
+			t.Errorf("mode %s: Protocol = %q, want %q", tc.mode, got, tc.mode)
+		}
+	}
+}
+
+// http resources: protocol is ignored server-side, so a known prior
+// value is kept, and a pre-1.19 server echo wins over it.
+func TestApplyHTTPResourceResponse_HTTPProtocol(t *testing.T) {
+	res := &client.Resource{ResourceID: 58, Name: "x", Mode: "http"}
+	plan := HTTPResourceModel{ID: types.Int64Value(58), Protocol: types.StringValue("tcp")}
+	if got := applyHTTPResourceResponse(plan, res).Protocol.ValueString(); got != "tcp" {
+		t.Errorf("Protocol = %q, want prior tcp", got)
+	}
+	legacy := &client.Resource{ResourceID: 59, Name: "x", Protocol: "udp"}
+	if got := applyHTTPResourceResponse(HTTPResourceModel{}, legacy).Protocol.ValueString(); got != "udp" {
+		t.Errorf("Protocol = %q, want server-echoed udp", got)
 	}
 }
 

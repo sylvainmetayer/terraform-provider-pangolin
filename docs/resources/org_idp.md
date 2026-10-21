@@ -5,7 +5,7 @@ subcategory: ""
 description: |-
   Manages an OIDC Identity Provider scoped to a single Pangolin organization.
   This is the single-resource equivalent of combining pangolin_idp (system-wide create) + pangolin_idp_org (bind to an org): the upstream /org/{org}/idp/oidc endpoint auto-binds the new IDP to the calling org at creation time, removing the need for a separate binding resource.
-  **Note:** `client_secret` cannot be recovered after import and must be set manually in config to avoid spurious diffs.
+  **Note:** Pangolin returns `client_secret` decrypted, so it is read back on import and on refresh (a secret rotated in the UI shows as drift). The Terraform state holds the secret and must be protected accordingly.
 ---
 
 # pangolin_org_idp (Resource)
@@ -14,7 +14,7 @@ Manages an OIDC Identity Provider scoped to a single Pangolin organization.
 
 This is the single-resource equivalent of combining `pangolin_idp` (system-wide create) + `pangolin_idp_org` (bind to an org): the upstream `/org/{org}/idp/oidc` endpoint auto-binds the new IDP to the calling org at creation time, removing the need for a separate binding resource.
 
-> **Note:** `client_secret` cannot be recovered after import and must be set manually in config to avoid spurious diffs.
+> **Note:** Pangolin returns `client_secret` decrypted, so it is read back on import and on refresh (a secret rotated in the UI shows as drift). The Terraform state holds the secret and must be protected accordingly.
 
 ## Example Usage
 
@@ -81,7 +81,7 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 ```shell
 # Import format: "{org_id}/{idp_id}"
 #
-# Note: `client_secret` cannot be recovered after import - set it
-# manually in config to avoid a spurious diff on the next plan.
+# Note: Pangolin returns `client_secret` decrypted, so the import reads
+# it back into the Terraform state. Protect the state accordingly.
 terraform import pangolin_org_idp.authentik my-org/3
 ```

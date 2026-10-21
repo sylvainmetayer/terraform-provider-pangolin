@@ -8,52 +8,34 @@ import (
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
 
-// idp.go has no extracted helper - the (IDP, OIDCConfig) triple is
-// folded into the model inline in Create/Read/Import. These tests
-// replay each inline path against fixture wire payloads.
+// applyIDPReadResponse is the shared Read / ImportState mapping; these
+// tests replay it against fixture wire payloads.
 
-// applyIDPReadResponse mirrors the Read() inline mapping: server-side
-// fields flow into state, ClientSecret is caller-managed and preserved
-// from prior.
-func applyIDPReadResponse(prior IDPResourceModel, idp *client.IDP, cfg *client.IDPOidcConfig) IDPResourceModel {
-	prior.Name = types.StringValue(idp.Name)
-	prior.AutoProvision = types.BoolValue(idp.AutoProvision)
-	prior.Tags = types.StringValue(idp.Tags)
-	prior.Variant = types.StringValue(idp.Variant)
-	prior.ClientID = types.StringValue(cfg.ClientID)
-	prior.AuthURL = types.StringValue(cfg.AuthURL)
-	prior.TokenURL = types.StringValue(cfg.TokenURL)
-	prior.IdentifierPath = types.StringValue(cfg.IdentifierPath)
-	prior.EmailPath = types.StringValue(cfg.EmailPath)
-	prior.NamePath = types.StringValue(cfg.NamePath)
-	prior.Scopes = types.StringValue(cfg.Scopes)
-	return prior
-}
-
-func TestIDP_ReadMapping_PreservesClientSecret(t *testing.T) {
+func TestIDP_ReadMapping_FollowsServerSecret(t *testing.T) {
+	// GET /idp/{id} carries the variant on idpOidcConfig, not on idp.
 	idp := &client.IDP{
 		IDPId:         5,
 		Name:          "google",
 		Type:          "oidc",
-		Variant:       "google",
 		AutoProvision: true,
 		Tags:          "prod",
 	}
 	cfg := &client.IDPOidcConfig{
-		ClientID: "cid", ClientSecret: "ignored-server-value",
+		Variant:  "google",
+		ClientID: "cid", ClientSecret: "rotated-in-ui",
 		AuthURL: "https://a", TokenURL: "https://t",
 		IdentifierPath: "sub", EmailPath: "email", NamePath: "name",
 		Scopes: "openid email profile",
 	}
 	prior := IDPResourceModel{
 		ID:           types.Int64Value(5),
-		ClientSecret: types.StringValue("kept-by-user"),
+		ClientSecret: types.StringValue("old-secret"),
 		RedirectURL:  types.StringValue("https://cb"),
 	}
 	m := applyIDPReadResponse(prior, idp, cfg)
 
-	if m.ClientSecret.ValueString() != "kept-by-user" {
-		t.Errorf("ClientSecret must be preserved from prior, got %q", m.ClientSecret.ValueString())
+	if m.ClientSecret.ValueString() != "rotated-in-ui" {
+		t.Errorf("ClientSecret must follow the server (drift detection), got %q", m.ClientSecret.ValueString())
 	}
 	if m.RedirectURL.ValueString() != "https://cb" {
 		t.Errorf("RedirectURL must be preserved from prior, got %q", m.RedirectURL.ValueString())
@@ -86,36 +68,35 @@ func TestIDP_ReadMapping_PreservesClientSecret(t *testing.T) {
 	}
 }
 
-func TestIDP_ImportState_NullSensitiveFields(t *testing.T) {
-	// ImportState builds the model with empty ClientSecret and
-	// empty RedirectURL because neither is recoverable after import.
+func TestIDP_ReadMapping_EmptySecretKeepsPrior(t *testing.T) {
+	idp := &client.IDP{IDPId: 5, Name: "n", Type: "oidc"}
+	cfg := &client.IDPOidcConfig{ClientID: "cid"}
+	prior := IDPResourceModel{ClientSecret: types.StringValue("kept")}
+	if got := applyIDPReadResponse(prior, idp, cfg).ClientSecret.ValueString(); got != "kept" {
+		t.Errorf("ClientSecret = %q, want prior value when the server sends none", got)
+	}
+}
+
+func TestIDP_ImportState_RecoversClientSecret(t *testing.T) {
+	// ImportState seeds ID / ClientSecret / RedirectURL, then runs the
+	// Read mapping. ClientSecret comes from the decrypted GET payload;
+	// RedirectURL remains empty because GET does not return it.
 	idp := &client.IDP{
-		IDPId: 5, Name: "n", Variant: "oidc",
+		IDPId: 5, Name: "n",
 		AutoProvision: false, Tags: "",
 	}
 	cfg := &client.IDPOidcConfig{
-		ClientID: "cid", AuthURL: "a", TokenURL: "t",
+		ClientID: "cid", ClientSecret: "existing-secret", AuthURL: "a", TokenURL: "t",
 		IdentifierPath: "sub", EmailPath: "email", NamePath: "name",
 		Scopes: "openid",
 	}
-	state := IDPResourceModel{
-		ID:             types.Int64Value(int64(idp.IDPId)),
-		Name:           types.StringValue(idp.Name),
-		AutoProvision:  types.BoolValue(idp.AutoProvision),
-		Tags:           types.StringValue(idp.Tags),
-		Variant:        types.StringValue(idp.Variant),
-		ClientID:       types.StringValue(cfg.ClientID),
-		ClientSecret:   types.StringValue(""), // not recoverable
-		AuthURL:        types.StringValue(cfg.AuthURL),
-		TokenURL:       types.StringValue(cfg.TokenURL),
-		IdentifierPath: types.StringValue(cfg.IdentifierPath),
-		EmailPath:      types.StringValue(cfg.EmailPath),
-		NamePath:       types.StringValue(cfg.NamePath),
-		Scopes:         types.StringValue(cfg.Scopes),
-		RedirectURL:    types.StringValue(""), // not returned by GET
-	}
+	state := applyIDPReadResponse(IDPResourceModel{
+		ID:           types.Int64Value(int64(idp.IDPId)),
+		ClientSecret: types.StringValue(""),
+		RedirectURL:  types.StringValue(""),
+	}, idp, cfg)
 	// Assert every field on the imported state matches its source,
-	// plus the two non-recoverable secret contracts.
+	// plus the secret recovery and non-recoverable redirect contracts.
 	if got := state.ID.ValueInt64(); got != int64(idp.IDPId) {
 		t.Errorf("ID = %d, want %d", got, idp.IDPId)
 	}
@@ -128,8 +109,8 @@ func TestIDP_ImportState_NullSensitiveFields(t *testing.T) {
 	if got := state.Tags.ValueString(); got != idp.Tags {
 		t.Errorf("Tags = %q, want %q", got, idp.Tags)
 	}
-	if got := state.Variant.ValueString(); got != idp.Variant {
-		t.Errorf("Variant = %q, want %q", got, idp.Variant)
+	if got := state.Variant.ValueString(); got != "oidc" {
+		t.Errorf("Variant = %q, want normalized generic oidc", got)
 	}
 	if got := state.ClientID.ValueString(); got != cfg.ClientID {
 		t.Errorf("ClientID = %q, want %q", got, cfg.ClientID)
@@ -152,11 +133,49 @@ func TestIDP_ImportState_NullSensitiveFields(t *testing.T) {
 	if got := state.Scopes.ValueString(); got != cfg.Scopes {
 		t.Errorf("Scopes = %q, want %q", got, cfg.Scopes)
 	}
-	if state.ClientSecret.ValueString() != "" {
-		t.Errorf("ClientSecret must be empty after import")
+	if state.ClientSecret.ValueString() != cfg.ClientSecret {
+		t.Errorf("ClientSecret = %q, want recovered API value", state.ClientSecret.ValueString())
 	}
 	if state.RedirectURL.ValueString() != "" {
 		t.Errorf("RedirectURL must be empty after import (not returned by GET)")
+	}
+}
+
+func TestResolveIDPVariant(t *testing.T) {
+	tests := []struct {
+		name   string
+		idpVar string
+		cfgVar string
+		want   string
+	}{
+		{name: "GET shape, generic", cfgVar: "oidc", want: "oidc"},
+		{name: "GET shape, google", cfgVar: "google", want: "google"},
+		{name: "GET shape, azure", cfgVar: "azure", want: "azure"},
+		{name: "LIST shape", idpVar: "google", want: "google"},
+		{name: "config wins", idpVar: "oidc", cfgVar: "azure", want: "azure"},
+		{name: "missing", want: "oidc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveIDPVariant(types.StringNull(), &client.IDP{Variant: tt.idpVar}, &client.IDPOidcConfig{Variant: tt.cfgVar})
+			if got != tt.want {
+				t.Fatalf("resolveIDPVariant(%q, %q) = %q, want %q", tt.idpVar, tt.cfgVar, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveIDPVariant_KeepsKnownPrior(t *testing.T) {
+	// A server that sends no variant must not flip an explicit
+	// `variant = "google"` to "oidc" at apply time.
+	got := resolveIDPVariant(types.StringValue("google"), &client.IDP{}, &client.IDPOidcConfig{})
+	if got != "google" {
+		t.Fatalf("variant = %q, want google (prior kept)", got)
+	}
+	// The server value still wins over the prior one.
+	got = resolveIDPVariant(types.StringValue("google"), &client.IDP{}, &client.IDPOidcConfig{Variant: "azure"})
+	if got != "azure" {
+		t.Fatalf("variant = %q, want azure (server wins)", got)
 	}
 }
 
@@ -188,10 +207,10 @@ func TestIDP_TripleJSONRoundTrip(t *testing.T) {
 		t.Errorf("OIDC block lost: %+v", out.IDPOidcConfig)
 	}
 
-	prior := IDPResourceModel{ClientSecret: types.StringValue("kept")}
+	prior := IDPResourceModel{ClientSecret: types.StringValue("old")}
 	m := applyIDPReadResponse(prior, &out.IDP, &out.IDPOidcConfig)
-	if m.ClientSecret.ValueString() != "kept" {
-		t.Errorf("client_secret got clobbered on round-trip")
+	if m.ClientSecret.ValueString() != "s" {
+		t.Errorf("client_secret should follow the decrypted wire value, got %q", m.ClientSecret.ValueString())
 	}
 	if m.ClientID.ValueString() != "cid" {
 		t.Errorf("client_id lost")
@@ -247,12 +266,12 @@ func TestIDP_CreateRequest_FullShape(t *testing.T) {
 func TestIDPOidcConfig_UnmarshalNominal(t *testing.T) {
 	// Direct sanity check: the OIDC config struct's JSON tags map
 	// to lowerCamel per the client contract.
-	raw := `{"clientId":"cid","clientSecret":"s","authUrl":"a","tokenUrl":"t","identifierPath":"sub","emailPath":"email","namePath":"name","scopes":"openid"}`
+	raw := `{"variant":"azure","clientId":"cid","clientSecret":"s","authUrl":"a","tokenUrl":"t","identifierPath":"sub","emailPath":"email","namePath":"name","scopes":"openid"}`
 	var c client.IDPOidcConfig
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if c.ClientID != "cid" || c.ClientSecret != "s" || c.AuthURL != "a" {
+	if c.Variant != "azure" || c.ClientID != "cid" || c.ClientSecret != "s" || c.AuthURL != "a" {
 		t.Errorf("OIDC config tag drift: %+v", c)
 	}
 	if c.IdentifierPath != "sub" || c.EmailPath != "email" ||

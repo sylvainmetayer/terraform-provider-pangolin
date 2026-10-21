@@ -58,7 +58,9 @@ func (r *IDPResource) Metadata(_ context.Context, req resource.MetadataRequest, 
 func (r *IDPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a Pangolin OIDC Identity Provider.\n\n" +
-			"> **Note:** `client_secret` cannot be recovered after import and must be set manually.",
+			"> **Note:** Pangolin returns `client_secret` decrypted, so it is read back on import and on " +
+			"refresh (a secret rotated in the UI shows as drift). The Terraform state holds the secret " +
+			"and must be protected accordingly.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The numeric IDP ID.",
@@ -148,7 +150,7 @@ func (r *IDPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				},
 			},
 			"variant": schema.StringAttribute{
-				Description: "OIDC variant. Refines `type = oidc` to a provider family - Pangolin uses this to pre-fill default URLs and tweak the consent flow. One of `oidc` (generic, default), `google`, `azure`.",
+				Description: "OIDC variant. Refines `type = oidc` to a provider family - Pangolin uses this to pre-fill default URLs and tweak the consent flow. One of `oidc` (generic, default), `google`, `azure`. Read from the OIDC configuration; a missing value reads as `oidc`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -219,7 +221,7 @@ func (r *IDPResource) Create(ctx context.Context, req resource.CreateRequest, re
 	plan.Name = types.StringValue(idp.Name)
 	plan.AutoProvision = types.BoolValue(idp.AutoProvision)
 	plan.Tags = types.StringValue(idp.Tags)
-	plan.Variant = types.StringValue(idp.Variant)
+	plan.Variant = types.StringValue(resolveIDPVariant(plan.Variant, idp, oidcCfg))
 	plan.EmailPath = types.StringValue(oidcCfg.EmailPath)
 	plan.NamePath = types.StringValue(oidcCfg.NamePath)
 
@@ -243,19 +245,7 @@ func (r *IDPResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	state.Name = types.StringValue(idp.Name)
-	state.AutoProvision = types.BoolValue(idp.AutoProvision)
-	state.Tags = types.StringValue(idp.Tags)
-	state.Variant = types.StringValue(idp.Variant)
-	state.ClientID = types.StringValue(oidcCfg.ClientID)
-	// ClientSecret is not returned masked from API; preserve existing state value.
-	state.AuthURL = types.StringValue(oidcCfg.AuthURL)
-	state.TokenURL = types.StringValue(oidcCfg.TokenURL)
-	state.IdentifierPath = types.StringValue(oidcCfg.IdentifierPath)
-	state.EmailPath = types.StringValue(oidcCfg.EmailPath)
-	state.NamePath = types.StringValue(oidcCfg.NamePath)
-	state.Scopes = types.StringValue(oidcCfg.Scopes)
-
+	state = applyIDPReadResponse(state, idp, oidcCfg)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -321,20 +311,54 @@ func (r *IDPResource) ImportState(ctx context.Context, req resource.ImportStateR
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &IDPResourceModel{
-		ID:             types.Int64Value(int64(idp.IDPId)),
-		Name:           types.StringValue(idp.Name),
-		AutoProvision:  types.BoolValue(idp.AutoProvision),
-		Tags:           types.StringValue(idp.Tags),
-		Variant:        types.StringValue(idp.Variant),
-		ClientID:       types.StringValue(oidcCfg.ClientID),
-		ClientSecret:   types.StringValue(""), // not recoverable after import
-		AuthURL:        types.StringValue(oidcCfg.AuthURL),
-		TokenURL:       types.StringValue(oidcCfg.TokenURL),
-		IdentifierPath: types.StringValue(oidcCfg.IdentifierPath),
-		EmailPath:      types.StringValue(oidcCfg.EmailPath),
-		NamePath:       types.StringValue(oidcCfg.NamePath),
-		Scopes:         types.StringValue(oidcCfg.Scopes),
-		RedirectURL:    types.StringValue(""), // not returned by GET
-	})...)
+	state := IDPResourceModel{
+		ID:           types.Int64Value(int64(idp.IDPId)),
+		ClientSecret: types.StringValue(""),
+		RedirectURL:  types.StringValue(""), // not returned by GET
+	}
+	state = applyIDPReadResponse(state, idp, oidcCfg)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// applyIDPReadResponse copies the GET /idp/{id} payload into the model.
+// Used by Read and ImportState. Pangolin returns the client secret
+// decrypted, so it is mapped too: Read then reports a secret rotated in
+// the UI as drift, and an import adopts the live secret instead of
+// planning an update. An empty secret (not expected from the server)
+// keeps the prior value. redirect_url is not returned and stays as is.
+func applyIDPReadResponse(m IDPResourceModel, idp *client.IDP, cfg *client.IDPOidcConfig) IDPResourceModel {
+	m.Name = types.StringValue(idp.Name)
+	m.AutoProvision = types.BoolValue(idp.AutoProvision)
+	m.Tags = types.StringValue(idp.Tags)
+	m.Variant = types.StringValue(resolveIDPVariant(m.Variant, idp, cfg))
+	m.ClientID = types.StringValue(cfg.ClientID)
+	if cfg.ClientSecret != "" {
+		m.ClientSecret = types.StringValue(cfg.ClientSecret)
+	}
+	m.AuthURL = types.StringValue(cfg.AuthURL)
+	m.TokenURL = types.StringValue(cfg.TokenURL)
+	m.IdentifierPath = types.StringValue(cfg.IdentifierPath)
+	m.EmailPath = types.StringValue(cfg.EmailPath)
+	m.NamePath = types.StringValue(cfg.NamePath)
+	m.Scopes = types.StringValue(cfg.Scopes)
+	return m
+}
+
+// resolveIDPVariant returns the OIDC variant of a single-GET payload.
+// The variant column lives on idpOidcConfig, so the GET endpoints only
+// carry it there; idp.variant is set by the LIST projection. When the
+// server sends neither, a known prior (planned or state) value is kept
+// so an explicit `variant` never flips at apply; otherwise it falls back
+// to the generic "oidc", the column default.
+func resolveIDPVariant(prior types.String, idp *client.IDP, cfg *client.IDPOidcConfig) string {
+	if cfg != nil && cfg.Variant != "" {
+		return cfg.Variant
+	}
+	if idp.Variant != "" {
+		return idp.Variant
+	}
+	if !prior.IsNull() && !prior.IsUnknown() && prior.ValueString() != "" {
+		return prior.ValueString()
+	}
+	return "oidc"
 }

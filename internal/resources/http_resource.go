@@ -166,13 +166,18 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"protocol": schema.StringAttribute{
-				Description: "The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / " +
-					"`tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.",
-				Optional: true,
-				Computed: true,
-				Default:  stringdefault.StaticString("tcp"),
+				Description: "Deprecated: use `mode`. The L4 protocol (tcp or udp). Legacy alias: Pangolin " +
+					"derives the transport from `mode`, so this follows `mode` for `tcp` / `udp` resources " +
+					"(setting another value is an error) and is `tcp` for `http`, where it is ignored. Leave it unset.",
+				DeprecationMessage: httpResourceProtocolDeprecation,
+				Optional:           true,
+				Computed:           true,
+				PlanModifiers: []planmodifier.String{
+					protocolFromModeModifier{},
+				},
 				Validators: []validator.String{
 					stringvalidator.OneOf("tcp", "udp"),
+					protocolMatchesModeValidator{},
 				},
 			},
 			"mode": schema.StringAttribute{
@@ -721,6 +726,7 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	m.Name = types.StringValue(res.Name)
 	m.FullDomain = types.StringValue(res.FullDomain)
 	m.DomainID = types.StringValue(res.DomainID)
+	m.Protocol = resolveHTTPResourceProtocol(m.Protocol, res)
 	if res.Subdomain != "" {
 		m.Subdomain = types.StringValue(res.Subdomain)
 	} else {
