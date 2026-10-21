@@ -4409,3 +4409,218 @@ func extractParam(rawQuery, key string) string {
 	}
 	return ""
 }
+
+// --- Alert rules ---
+
+func TestCreateAlertRule_PathMethodAndEmptyArrays(t *testing.T) {
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/org/test-org/alert-rule" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusCreated, map[string]any{"alertRuleId": 17})
+	})
+
+	id, err := c.CreateAlertRule(context.Background(), &AlertRuleRequest{
+		Name:      "site down",
+		EventType: "site_offline",
+		Enabled:   true,
+		AllSites:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAlertRule: %v", err)
+	}
+	if id != 17 {
+		t.Errorf("id = %d, want 17", id)
+	}
+	// The server rejects `null` arrays: nil slices must go out as [].
+	for _, k := range []string{"siteIds", "healthCheckIds", "resourceIds", "userIds", "roleIds", "emails", "webhookActions"} {
+		if string(gotBody[k]) != "[]" {
+			t.Errorf("%s = %s, want []", k, gotBody[k])
+		}
+	}
+	if string(gotBody["allSites"]) != "true" || string(gotBody["cooldownSeconds"]) != "0" {
+		t.Errorf("allSites = %s, cooldownSeconds = %s", gotBody["allSites"], gotBody["cooldownSeconds"])
+	}
+}
+
+func TestCreateAlertRule_NotRetriedOnServerError(t *testing.T) {
+	disableRetryBackoff(t)
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeEnvelope(t, w, http.StatusBadGateway, nil)
+	})
+	_, err := c.CreateAlertRule(context.Background(), &AlertRuleRequest{Name: "x", EventType: "site_offline", AllSites: true})
+	if !errors.Is(err, ErrServer) {
+		t.Errorf("err = %v, want ErrServer", err)
+	}
+	// A replayed create could leave a duplicate rule on the server.
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestAlertWebhookConfig_EffectiveHeadersFoldsLikeServer(t *testing.T) {
+	cfg := AlertWebhookConfig{Headers: []AlertWebhookHeader{
+		{Key: "X-Tag", Value: "a"},
+		{Key: " ", Value: "ignored"},
+		{Key: " X-Tag ", Value: "b"},
+		{Key: "X-Other", Value: "c"},
+	}}
+	got := cfg.EffectiveHeaders()
+	want := map[string]string{"X-Tag": "b", "X-Other": "c"}
+	if len(got) != len(want) || got["X-Tag"] != "b" || got["X-Other"] != "c" {
+		t.Errorf("EffectiveHeaders = %v, want %v", got, want)
+	}
+}
+
+func TestProbeAlertRules_SingleRowRequest(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/v1/org/test-org/alert-rules" || r.URL.Query().Get("limit") != "1" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	if err := c.ProbeAlertRules(context.Background()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestGetAlertRule_DecodesAndSortsWebhooks(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/org/test-org/alert-rule/17" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"alertRuleId": 17, "orgId": "test-org", "name": "hc", "eventType": "health_check_unhealthy",
+			"enabled": true, "cooldownSeconds": 60, "lastTriggeredAt": nil,
+			"createdAt": 1700000000000, "updatedAt": 1700000000001,
+			"siteIds": []int{}, "healthCheckIds": []int{3, 4}, "resourceIds": []int{},
+			"recipients": []map[string]any{
+				{"recipientId": 1, "userId": "u1", "roleId": nil, "email": nil},
+				{"recipientId": 2, "userId": nil, "roleId": 9, "email": nil},
+				{"recipientId": 3, "userId": nil, "roleId": nil, "email": "ops@example.com"},
+			},
+			"webhookActions": []map[string]any{
+				{"webhookActionId": 8, "webhookUrl": "https://b.example.com", "enabled": false, "lastSentAt": nil, "config": nil},
+				{"webhookActionId": 5, "webhookUrl": "https://a.example.com", "enabled": true, "lastSentAt": 1700000000002,
+					"config": map[string]any{"authType": "bearer", "bearerToken": "tok", "method": "PUT",
+						"headers": []map[string]string{{"key": "X-A", "value": "1"}}}},
+			},
+		})
+	})
+
+	got, err := c.GetAlertRule(context.Background(), 17)
+	if err != nil {
+		t.Fatalf("GetAlertRule: %v", err)
+	}
+	if got.CooldownSeconds != 60 || got.LastTriggeredAt != nil || len(got.HealthCheckIDs) != 2 {
+		t.Errorf("rule = %+v", got.AlertRule)
+	}
+	if len(got.Recipients) != 3 || *got.Recipients[0].UserID != "u1" || *got.Recipients[1].RoleID != 9 || *got.Recipients[2].Email != "ops@example.com" {
+		t.Errorf("recipients = %+v", got.Recipients)
+	}
+	if len(got.WebhookActions) != 2 || got.WebhookActions[0].WebhookActionID != 5 {
+		t.Fatalf("webhook actions not sorted by ID: %+v", got.WebhookActions)
+	}
+	cfg := got.WebhookActions[0].Config
+	if cfg == nil || cfg.AuthType != "bearer" || *cfg.BearerToken != "tok" || *cfg.Method != "PUT" || cfg.Headers[0].Key != "X-A" {
+		t.Errorf("config = %+v", cfg)
+	}
+	if got.WebhookActions[1].Config != nil {
+		t.Errorf("null config should decode to nil")
+	}
+}
+
+func TestGetAlertRule_NotFound(t *testing.T) {
+	disableRetryBackoff(t)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusNotFound, nil)
+	})
+	if _, err := c.GetAlertRule(context.Background(), 99); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateAlertRule_PathMethodAndWebhookConfig(t *testing.T) {
+	var gotBody AlertRuleRequest
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/org/test-org/alert-rule/17" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"alertRuleId": 17})
+	})
+
+	cfg := `{"authType":"none"}`
+	if err := c.UpdateAlertRule(context.Background(), 17, &AlertRuleRequest{
+		Name:           "r",
+		EventType:      "resource_degraded",
+		ResourceIDs:    []int{2},
+		WebhookActions: []AlertWebhookActionRequest{{WebhookURL: "https://x.example.com", Config: &cfg, Enabled: true}},
+	}); err != nil {
+		t.Fatalf("UpdateAlertRule: %v", err)
+	}
+	if len(gotBody.ResourceIDs) != 1 || len(gotBody.WebhookActions) != 1 || *gotBody.WebhookActions[0].Config != cfg {
+		t.Errorf("body = %+v", gotBody)
+	}
+}
+
+func TestDeleteAlertRule_PathAndMethod(t *testing.T) {
+	hits := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/org/test-org/alert-rule/17" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, nil)
+	})
+	if err := c.DeleteAlertRule(context.Background(), 17); err != nil {
+		t.Fatalf("DeleteAlertRule: %v", err)
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d", hits)
+	}
+}
+
+func TestListAlertRules_PaginatesAndFilters(t *testing.T) {
+	var offsets []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org/test-org/alert-rules" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("query") != "down" || q.Get("enabled") != "false" || q.Get("limit") != "1000" {
+			t.Errorf("query = %q", r.URL.RawQuery)
+		}
+		offsets = append(offsets, q.Get("offset"))
+		rows := []map[string]any{{"alertRuleId": len(offsets), "name": "r", "eventType": "site_online"}}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"alertRules": rows,
+			"pagination": map[string]any{"total": 2, "limit": 1000, "offset": 0},
+		})
+	})
+
+	disabled := false
+	rules, err := c.ListAlertRules(context.Background(), AlertRuleListQuery{Query: "down", Enabled: &disabled})
+	if err != nil {
+		t.Fatalf("ListAlertRules: %v", err)
+	}
+	if len(rules) != 2 || rules[1].AlertRuleID != 2 {
+		t.Errorf("rules = %+v", rules)
+	}
+	if len(offsets) != 2 || offsets[0] != "0" || offsets[1] != "1" {
+		t.Errorf("offsets = %v", offsets)
+	}
+}

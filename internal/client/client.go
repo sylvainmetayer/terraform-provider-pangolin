@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -161,6 +163,83 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 		}
 	}
 	return lastResp, lastErr
+}
+
+// doRequestNoRetry sends a non-idempotent request. Pangolin creates most
+// objects with PUT, which doRequest retries: replaying a create whose
+// response was lost (connection reset, proxy 502) would leave a duplicate
+// on the server. Only failures proving the server did not process the
+// request are retried: HTTP 429 and a connection that was never opened.
+func (c *Client) doRequestNoRetry(ctx context.Context, method, path string, body interface{}) (*APIResponse, error) {
+	var bodyBytes []byte
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyBytes = b
+	}
+
+	var (
+		lastResp *APIResponse
+		lastErr  error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			wait := backoffDelay(attempt - 1)
+			tflog.Debug(ctx, "pangolin: retrying unsent HTTP request", map[string]any{
+				"method":  method,
+				"path":    path,
+				"attempt": attempt,
+				"wait_ms": wait.Milliseconds(),
+			})
+			select {
+			case <-ctx.Done():
+				return lastResp, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+
+		lastResp, lastErr = c.doRequestOnce(ctx, method, path, bodyBytes)
+		if !shouldRetryUnsent(lastErr) {
+			return lastResp, lastErr
+		}
+	}
+	return lastResp, lastErr
+}
+
+// shouldRetryUnsent reports whether err proves the request never reached
+// the server's handler: a 429 rate limit, or a dial failure (including a
+// failed dial to an HTTP(S) proxy).
+func shouldRetryUnsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrRateLimited) {
+		return true
+	}
+	return isDialError(err)
+}
+
+// isDialError walks the whole error tree, so a dial *net.OpError wrapped
+// in a "proxyconnect" one or in a multi-%w error is still found.
+func isDialError(err error) bool {
+	if opErr, ok := err.(*net.OpError); ok && opErr.Op == "dial" {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		if inner := u.Unwrap(); inner != nil {
+			return isDialError(inner)
+		}
+	case interface{ Unwrap() []error }:
+		for _, inner := range u.Unwrap() {
+			if isDialError(inner) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // doRequestOnce performs a single HTTP attempt. bodyBytes may be nil.
@@ -3804,4 +3883,256 @@ func (c *Client) GetLogsAnalytics(ctx context.Context, orgID string, q LogsAnaly
 		return nil, fmt.Errorf("failed to parse logs analytics: %w", err)
 	}
 	return &out, nil
+}
+
+// --- Alert rules ---
+//
+// Alert rules live in Pangolin's private (Enterprise / Cloud) router:
+// Community Edition servers answer 404 on every route below. All
+// routes are org-scoped (`/org/{org}/alert-rule...`) and use the
+// provider-level org.
+
+// AlertRule is the row shape returned by GET /org/{org}/alert-rules.
+// The list projection carries the source IDs but neither recipients
+// nor webhook actions; fetch those with [Client.GetAlertRule].
+//
+// The server never echoes the allSites / allHealthChecks /
+// allResources flags, on the list or on the single GET.
+type AlertRule struct {
+	AlertRuleID     int    `json:"alertRuleId"`
+	OrgID           string `json:"orgId"`
+	Name            string `json:"name"`
+	EventType       string `json:"eventType"`
+	Enabled         bool   `json:"enabled"`
+	CooldownSeconds int64  `json:"cooldownSeconds"`
+	LastTriggeredAt *int64 `json:"lastTriggeredAt"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	SiteIDs         []int  `json:"siteIds"`
+	HealthCheckIDs  []int  `json:"healthCheckIds"`
+	ResourceIDs     []int  `json:"resourceIds"`
+}
+
+// AlertRuleRecipient is one email recipient of an alert rule. Exactly
+// one of UserID, RoleID or Email is set per row.
+type AlertRuleRecipient struct {
+	RecipientID int     `json:"recipientId"`
+	UserID      *string `json:"userId"`
+	RoleID      *int    `json:"roleId"`
+	Email       *string `json:"email"`
+}
+
+// AlertWebhookHeader is one extra header sent with a webhook call.
+type AlertWebhookHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// AlertWebhookConfig is the JSON document stored (encrypted) with a
+// webhook action. Writes send it as a JSON-encoded string in
+// `config`; GET /org/{org}/alert-rule/{id} returns it decrypted as an
+// object, credentials included, or null when the action has no
+// config or the server failed to decrypt it.
+type AlertWebhookConfig struct {
+	AuthType          string               `json:"authType"`
+	BearerToken       *string              `json:"bearerToken,omitempty"`
+	BasicCredentials  *string              `json:"basicCredentials,omitempty"`
+	CustomHeaderName  *string              `json:"customHeaderName,omitempty"`
+	CustomHeaderValue *string              `json:"customHeaderValue,omitempty"`
+	Headers           []AlertWebhookHeader `json:"headers,omitempty"`
+	Method            *string              `json:"method,omitempty"`
+	UseBodyTemplate   *bool                `json:"useBodyTemplate,omitempty"`
+	BodyTemplate      *string              `json:"bodyTemplate,omitempty"`
+}
+
+// EffectiveHeaders folds the header rows the way the server does when it
+// sends the webhook (sendAlertWebhook.ts buildHeaders): keys are trimmed,
+// blank keys are skipped and the last duplicate wins.
+func (c *AlertWebhookConfig) EffectiveHeaders() map[string]string {
+	out := map[string]string{}
+	for _, h := range c.Headers {
+		if key := strings.TrimSpace(h.Key); key != "" {
+			out[key] = h.Value
+		}
+	}
+	return out
+}
+
+// AlertWebhookAction is one webhook action as returned by the GET.
+type AlertWebhookAction struct {
+	WebhookActionID int                 `json:"webhookActionId"`
+	WebhookURL      string              `json:"webhookUrl"`
+	Enabled         bool                `json:"enabled"`
+	LastSentAt      *int64              `json:"lastSentAt"`
+	Config          *AlertWebhookConfig `json:"config"`
+}
+
+// AlertRuleDetail is the response body of GET /org/{org}/alert-rule/{id}.
+type AlertRuleDetail struct {
+	AlertRule
+	Recipients     []AlertRuleRecipient `json:"recipients"`
+	WebhookActions []AlertWebhookAction `json:"webhookActions"`
+}
+
+// AlertWebhookActionRequest is one webhook action in a create / update
+// body. Config is the JSON-encoded [AlertWebhookConfig].
+type AlertWebhookActionRequest struct {
+	WebhookURL string  `json:"webhookUrl"`
+	Config     *string `json:"config,omitempty"`
+	Enabled    bool    `json:"enabled"`
+}
+
+// AlertRuleRequest is the body of both PUT /org/{org}/alert-rule and
+// POST /org/{org}/alert-rule/{id}. The update endpoint fully replaces
+// each child list it receives (sources, recipients, webhook actions),
+// so the provider always sends every field: the slices are not
+// omitempty and must be non-nil (the server rejects `null`).
+type AlertRuleRequest struct {
+	Name            string                      `json:"name"`
+	EventType       string                      `json:"eventType"`
+	Enabled         bool                        `json:"enabled"`
+	CooldownSeconds int64                       `json:"cooldownSeconds"`
+	SiteIDs         []int                       `json:"siteIds"`
+	AllSites        bool                        `json:"allSites"`
+	HealthCheckIDs  []int                       `json:"healthCheckIds"`
+	AllHealthChecks bool                        `json:"allHealthChecks"`
+	ResourceIDs     []int                       `json:"resourceIds"`
+	AllResources    bool                        `json:"allResources"`
+	UserIDs         []string                    `json:"userIds"`
+	RoleIDs         []int                       `json:"roleIds"`
+	Emails          []string                    `json:"emails"`
+	WebhookActions  []AlertWebhookActionRequest `json:"webhookActions"`
+}
+
+// normalized returns a copy of req where every nil slice is replaced
+// by an empty one, so the body never carries `null` arrays.
+func (req AlertRuleRequest) normalized() AlertRuleRequest {
+	if req.SiteIDs == nil {
+		req.SiteIDs = []int{}
+	}
+	if req.HealthCheckIDs == nil {
+		req.HealthCheckIDs = []int{}
+	}
+	if req.ResourceIDs == nil {
+		req.ResourceIDs = []int{}
+	}
+	if req.UserIDs == nil {
+		req.UserIDs = []string{}
+	}
+	if req.RoleIDs == nil {
+		req.RoleIDs = []int{}
+	}
+	if req.Emails == nil {
+		req.Emails = []string{}
+	}
+	if req.WebhookActions == nil {
+		req.WebhookActions = []AlertWebhookActionRequest{}
+	}
+	return req
+}
+
+// CreateAlertRule creates an alert rule in the provider org and
+// returns its ID (the response only carries `{alertRuleId}`). The PUT is
+// sent once: a retried create could leave a duplicate rule that keeps
+// sending alerts.
+func (c *Client) CreateAlertRule(ctx context.Context, req *AlertRuleRequest) (int, error) {
+	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/alert-rule", c.OrgID), req.normalized())
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		AlertRuleID int `json:"alertRuleId"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return 0, fmt.Errorf("failed to parse alert rule create response: %w", err)
+	}
+	return out.AlertRuleID, nil
+}
+
+// GetAlertRule fetches one alert rule with its recipients and webhook
+// actions. Webhook actions are sorted by ID: the server reads them
+// without an ORDER BY, and IDs follow the order they were sent in.
+func (c *Client) GetAlertRule(ctx context.Context, alertRuleID int) (*AlertRuleDetail, error) {
+	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/alert-rule/%d", c.OrgID, alertRuleID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var out AlertRuleDetail
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse alert rule: %w", err)
+	}
+	sort.SliceStable(out.WebhookActions, func(i, j int) bool {
+		return out.WebhookActions[i].WebhookActionID < out.WebhookActions[j].WebhookActionID
+	})
+	return &out, nil
+}
+
+// UpdateAlertRule replaces an alert rule. See [AlertRuleRequest] for
+// the full-replace semantics of the child lists.
+func (c *Client) UpdateAlertRule(ctx context.Context, alertRuleID int, req *AlertRuleRequest) error {
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/org/%s/alert-rule/%d", c.OrgID, alertRuleID), req.normalized())
+	return err
+}
+
+// DeleteAlertRule deletes an alert rule. Child rows cascade server-side.
+func (c *Client) DeleteAlertRule(ctx context.Context, alertRuleID int) error {
+	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/org/%s/alert-rule/%d", c.OrgID, alertRuleID), nil)
+	return err
+}
+
+// AlertRuleListQuery holds the optional filters of
+// GET /org/{org}/alert-rules. Zero values are not sent.
+type AlertRuleListQuery struct {
+	// Query is a case-insensitive substring match on the rule name.
+	Query string
+	// Enabled filters on the enabled flag when non-nil.
+	Enabled *bool
+}
+
+// alertRulesPageSize is the page size used by [Client.ListAlertRules];
+// it matches the server default.
+const alertRulesPageSize = 1000
+
+// ListAlertRules returns every alert rule of the provider org matching
+// q, following the offset pagination until `pagination.total` rows
+// have been read.
+func (c *Client) ListAlertRules(ctx context.Context, q AlertRuleListQuery) ([]AlertRule, error) {
+	out := []AlertRule{}
+	for offset := 0; ; {
+		values := url.Values{}
+		values.Set("limit", strconv.Itoa(alertRulesPageSize))
+		values.Set("offset", strconv.Itoa(offset))
+		if q.Query != "" {
+			values.Set("query", q.Query)
+		}
+		if q.Enabled != nil {
+			values.Set("enabled", strconv.FormatBool(*q.Enabled))
+		}
+		resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/alert-rules?%s", c.OrgID, values.Encode()), nil)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			AlertRules []AlertRule `json:"alertRules"`
+			Pagination struct {
+				Total int `json:"total"`
+			} `json:"pagination"`
+		}
+		if err := json.Unmarshal(resp.Data, &page); err != nil {
+			return nil, fmt.Errorf("failed to parse alert rules list: %w", err)
+		}
+		out = append(out, page.AlertRules...)
+		offset += len(page.AlertRules)
+		if len(page.AlertRules) == 0 || offset >= page.Pagination.Total {
+			return out, nil
+		}
+	}
+}
+
+// ProbeAlertRules checks that the alert rule routes exist with a single
+// one-row list request. It returns [ErrNotFound] when they do not, as on
+// Community Edition servers or behind a wrong base URL.
+func (c *Client) ProbeAlertRules(ctx context.Context) error {
+	_, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/alert-rules?limit=1&offset=0", c.OrgID), nil)
+	return err
 }
