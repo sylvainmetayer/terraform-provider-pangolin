@@ -4492,6 +4492,32 @@ func TestUpdateSiteResource_SendsZeroValuedScalars(t *testing.T) {
 	}
 }
 
+func TestCreateSiteResource_SendsZeroValuedScalars(t *testing.T) {
+	// A missing port range gets the server default "*", so "" (no ports)
+	// and false must be sent explicitly; nil still omits the key.
+	var gotBody map[string]json.RawMessage
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"siteResourceId": 12})
+	})
+	empty, off := "", false
+	if _, err := c.CreateSiteResource(context.Background(), &CreateSiteResourceRequest{
+		Name: "db", SiteID: 5, Mode: "host", Destination: "db.internal",
+		UDPPortRange: &empty, DisableICMP: &off,
+		RoleIDs: []int{}, UserIDs: []string{}, ClientIDs: []int{},
+	}); err != nil {
+		t.Fatalf("CreateSiteResource: %v", err)
+	}
+	if string(gotBody["udpPortRangeString"]) != `""` || string(gotBody["disableIcmp"]) != "false" {
+		t.Errorf("zero values dropped: %v", gotBody)
+	}
+	if _, present := gotBody["tcpPortRangeString"]; present {
+		t.Errorf("nil tcpPortRangeString must be omitted, got %s", gotBody["tcpPortRangeString"])
+	}
+}
+
 // writeAPIError renders a Pangolin error envelope with a message.
 func writeAPIError(t *testing.T, w http.ResponseWriter, status int, message string) {
 	t.Helper()
