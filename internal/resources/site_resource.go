@@ -360,7 +360,7 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), buildUpdateSiteResourceRequest(plan))
+	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), buildUpdateSiteResourceRequest(&plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site resource", err.Error())
 		return
@@ -408,12 +408,10 @@ func (r *SitePrivateResource) ImportState(ctx context.Context, req resource.Impo
 // in gateway mode: a pre-1.24 server rejects the mode itself with a
 // validation error ("Invalid option: expected one of ... at \"mode\"").
 // Errors that name another field (duplicate name, bad site_id) get no
-// hint. Only the field name is matched, not the client's status
-// formatting; once client.ErrBadRequest exists (#1), this should also
-// require errors.Is(err, client.ErrBadRequest).
+// hint.
 func createSiteResourceErrorDetail(mode string, err error) string {
 	detail := err.Error()
-	if mode == siteResourceModeGateway && strings.Contains(detail, `"mode"`) {
+	if mode == siteResourceModeGateway && errors.Is(err, client.ErrBadRequest) && strings.Contains(detail, `"mode"`) {
 		detail += "\n\n`mode = \"gateway\"` requires Pangolin 1.24 or later: an older server " +
 			"rejects the mode with a validation error on `mode`."
 	}
@@ -453,32 +451,32 @@ func buildCreateSiteResourceRequest(plan SitePrivateResourceModel) *client.Creat
 }
 
 // buildUpdateSiteResourceRequest maps the plan to the update payload.
-// A gateway resource sends its mode, so that the server re-applies the
-// forced gateway values, and no destination.
-func buildUpdateSiteResourceRequest(plan SitePrivateResourceModel) *client.UpdateSiteResourceRequest {
+// The port ranges and disable_icmp are sent whenever they are known, so
+// `""` and `false` reach the server instead of being dropped. The grant
+// lists are left nil: the server keeps the current grants. A gateway
+// resource sends its mode, so that the server re-applies the forced
+// gateway values, and no destination or port ranges.
+func buildUpdateSiteResourceRequest(plan *SitePrivateResourceModel) *client.UpdateSiteResourceRequest {
 	req := &client.UpdateSiteResourceRequest{
 		Name:            plan.Name.ValueString(),
 		SiteID:          int(plan.SiteID.ValueInt64()),
 		Destination:     plan.Destination.ValueString(),
 		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
+		TCPPortRange:    tfconv.StringToPtr(plan.TCPPortRange),
+		UDPPortRange:    tfconv.StringToPtr(plan.UDPPortRange),
+		DisableICMP:     tfconv.BoolToPtr(plan.DisableICMP),
 		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
 		PamMode:         plan.PamMode.ValueString(),
 		DomainID:        plan.DomainID.ValueString(),
 		Subdomain:       plan.Subdomain.ValueString(),
 		Scheme:          plan.Scheme.ValueString(),
 		DestinationPort: int(plan.DestinationPort.ValueInt64()),
-		RoleIDs:         []int{},
-		UserIDs:         []string{},
-		ClientIDs:       []int{},
 	}
 	if plan.Mode.ValueString() == siteResourceModeGateway {
 		req.Mode = siteResourceModeGateway
 		req.Destination = ""
-		req.TCPPortRange = ""
-		req.UDPPortRange = ""
+		req.TCPPortRange = nil
+		req.UDPPortRange = nil
 	}
 	return req
 }

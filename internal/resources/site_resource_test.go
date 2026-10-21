@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -395,7 +396,7 @@ func TestBuildUpdateSiteResourceRequest_GatewaySendsMode(t *testing.T) {
 		TCPPortRange: types.StringValue("*"),
 		UDPPortRange: types.StringValue("*"),
 	}
-	got := buildUpdateSiteResourceRequest(plan)
+	got := buildUpdateSiteResourceRequest(&plan)
 	if got.Mode != "gateway" {
 		t.Errorf("Mode = %q, want gateway", got.Mode)
 	}
@@ -417,7 +418,7 @@ func TestBuildUpdateSiteResourceRequest_HostModeUnchanged(t *testing.T) {
 		TCPPortRange: types.StringValue("5432"),
 		UDPPortRange: types.StringValue(""),
 	}
-	raw, _ := json.Marshal(buildUpdateSiteResourceRequest(plan))
+	raw, _ := json.Marshal(buildUpdateSiteResourceRequest(&plan))
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -600,12 +601,12 @@ func TestGatewayForcedPlanModifiers(t *testing.T) {
 
 func TestCreateSiteResourceErrorDetail(t *testing.T) {
 	// The 1.23 body schema refuses the mode with a generic 400.
-	old := errors.New(`API error (status 400): Validation error: Invalid option: expected one of "host"|"cidr"|"http"|"ssh"|"inference" at "mode"`)
+	old := fmt.Errorf(`API error (status 400): Validation error: Invalid option: expected one of "host"|"cidr"|"http"|"ssh"|"inference" at "mode": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", old); !strings.Contains(got, "Pangolin 1.24") || !strings.HasPrefix(got, old.Error()) {
 		t.Errorf("gateway 400: %q", got)
 	}
-	// The hint does not depend on how the client formats the status.
-	reworded := errors.New(`pangolin: bad request: Validation error: Invalid option at "mode"`)
+	// The hint does not depend on how the server words the validation error.
+	reworded := fmt.Errorf(`Validation error: Invalid option at "mode": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", reworded); !strings.Contains(got, "Pangolin 1.24") {
 		t.Errorf("gateway 400, other formatting: %q", got)
 	}
@@ -614,12 +615,53 @@ func TestCreateSiteResourceErrorDetail(t *testing.T) {
 		t.Errorf("host 400: %q", got)
 	}
 	// A 1.24 server refusing another field: no upgrade hint.
-	otherField := errors.New(`API error (status 400): Validation error: Invalid input: expected number, received string at "siteIds[0]"`)
+	otherField := fmt.Errorf(`API error (status 400): Validation error: Invalid input: expected number, received string at "siteIds[0]": %w`, client.ErrBadRequest)
 	if got := createSiteResourceErrorDetail("gateway", otherField); got != otherField.Error() {
 		t.Errorf("gateway 400 on another field: %q", got)
 	}
 	conflict := errors.New("API error (status 409): Alias already in use by another site resource")
 	if got := createSiteResourceErrorDetail("gateway", conflict); got != conflict.Error() {
 		t.Errorf("gateway 409: %q", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// buildUpdateSiteResourceRequest: plan -> wire
+// -----------------------------------------------------------------------------
+
+func TestBuildUpdateSiteResourceRequest_KeepsGrantsAndSendsZeroValues(t *testing.T) {
+	// The update must never carry roleIds / userIds / clientIds (an empty
+	// list would wipe the grants of the _role / _user / _client
+	// resources), and must send "" / false since a missing key means
+	// "unchanged" on the server.
+	plan := SitePrivateResourceModel{
+		Name:           types.StringValue("db"),
+		SiteID:         types.Int64Value(5),
+		Mode:           types.StringValue("host"),
+		Destination:    types.StringValue("10.0.0.5"),
+		Alias:          types.StringValue("db.internal"),
+		TCPPortRange:   types.StringValue(""),
+		UDPPortRange:   types.StringNull(),
+		DisableICMP:    types.BoolValue(false),
+		AuthDaemonMode: types.StringValue("site"),
+	}
+	raw, err := json.Marshal(buildUpdateSiteResourceRequest(&plan))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"roleIds", "userIds", "clientIds", "udpPortRangeString"} {
+		if v, present := body[k]; present {
+			t.Errorf("%s must be omitted, got %s", k, v)
+		}
+	}
+	if string(body["tcpPortRangeString"]) != `""` || string(body["disableIcmp"]) != "false" {
+		t.Errorf("zero values dropped: %s", raw)
+	}
+	if string(body["name"]) != `"db"` || string(body["alias"]) != `"db.internal"` {
+		t.Errorf("scalars lost: %s", raw)
 	}
 }
