@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -15,15 +18,32 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
-	_ resource.Resource                = &SitePrivateResource{}
-	_ resource.ResourceWithImportState = &SitePrivateResource{}
+	_ resource.Resource                   = &SitePrivateResource{}
+	_ resource.ResourceWithImportState    = &SitePrivateResource{}
+	_ resource.ResourceWithValidateConfig = &SitePrivateResource{}
 )
+
+// siteResourceModeGateway is the 1.24+ "exit node" mode: the site
+// routes all traffic, and the server forces the values below whatever
+// the request says.
+const siteResourceModeGateway = "gateway"
+
+const (
+	gatewayDestination = "0.0.0.0/0"
+	gatewayPortRange   = "*"
+	gatewayDisableICMP = false
+)
+
+// httpTCPPortRange is the TCP port range the server forces when it
+// creates an http site resource.
+const httpTCPPortRange = "443,80"
 
 // SitePrivateResource defines the resource implementation.
 type SitePrivateResource struct {
@@ -100,24 +120,34 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"mode": schema.StringAttribute{
-				Description: "The mode: `host`, `cidr`, or `http`.\n\n" +
+				Description: "The mode: `host`, `cidr`, `http`, or `gateway`.\n\n" +
 					"`cidr` / `host` modes are L4 tunnels: the resource requires `alias` " +
 					"and uses `tcp_port_range` / `udp_port_range` for traffic shaping.\n\n" +
 					"`http` mode is an L7 HTTP proxy: the resource requires `domain_id`, " +
 					"`subdomain`, `scheme` (`http` / `https`) and `destination_port`. The " +
 					"server auto-assigns `tcp_port_range = \"443,80\"`, sets `disable_icmp = " +
-					"true`, and leaves `alias` null.",
+					"true`, and leaves `alias` null.\n\n" +
+					"`gateway` mode (Pangolin >= 1.24, \"exit node\" in the UI) routes all traffic through the " +
+					"site. The server forces `destination = \"0.0.0.0/0\"`, `tcp_port_range` and " +
+					"`udp_port_range` to `\"*\"` and `disable_icmp = false`: leave those unset. `alias`, " +
+					"`domain_id`, `subdomain`, `scheme` and `destination_port` have no use in this mode and are rejected.",
 				Required: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
-					stringvalidator.OneOf("host", "cidr", "http"),
+					stringvalidator.OneOf("host", "cidr", "http", siteResourceModeGateway),
 				},
 			},
 			"destination": schema.StringAttribute{
-				Description: "The destination: hostname (`host` mode), CIDR (`cidr` mode), or backend IP / hostname (`http` mode).",
-				Required:    true,
+				Description: "The destination: hostname (`host` mode), CIDR (`cidr` mode), or backend IP / hostname (`http` mode). " +
+					"Required in those modes. Leave unset for `gateway` mode, where the server sets `0.0.0.0/0`.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					gatewayForcedString(gatewayDestination),
+				},
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
@@ -131,27 +161,30 @@ func (r *SitePrivateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"tcp_port_range": schema.StringAttribute{
-				Description: "TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server auto-assigns `\"443,80\"` and ignores any value set here.",
+				Description: "TCP port range string. `*` for all, `` for none, or specific ports/ranges (e.g. `80,443,8080-8090`). For `mode = http` the server forces `\"443,80\"` and for `mode = gateway` it forces `\"*\"`; any other value is rejected in those modes.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					gatewayForcedString(gatewayPortRange),
 				},
 			},
 			"udp_port_range": schema.StringAttribute{
-				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges.",
+				Description: "UDP port range string. '*' for all, '' for none, or specific ports/ranges. For `mode = gateway` the server forces `\"*\"` and any other value is rejected. For `mode = http` the value has no effect: Pangolin 1.24 stores `\"\"` and older servers store it unused, so a non-empty value only raises a warning and is kept as configured in state.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					gatewayForcedString(gatewayPortRange),
 				},
 			},
 			"disable_icmp": schema.BoolAttribute{
-				Description: "Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes and `true` for `mode = http`; leaving this unset lets the server pick.",
+				Description: "Whether to disable ICMP. The server defaults to `false` for `cidr` / `host` modes, forces `true` for `mode = http` and `false` for `mode = gateway` (any other value is rejected in those two modes); leaving this unset lets the server pick.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
+					gatewayForcedBool(gatewayDisableICMP),
 				},
 			},
 			"auth_daemon_mode": schema.StringAttribute{
@@ -286,27 +319,9 @@ func (r *SitePrivateResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	siteRes, err := r.client.CreateSiteResource(ctx, &client.CreateSiteResourceRequest{
-		Name:            plan.Name.ValueString(),
-		SiteID:          int(plan.SiteID.ValueInt64()),
-		Mode:            plan.Mode.ValueString(),
-		Destination:     plan.Destination.ValueString(),
-		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
-		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
-		PamMode:         plan.PamMode.ValueString(),
-		DomainID:        plan.DomainID.ValueString(),
-		Subdomain:       plan.Subdomain.ValueString(),
-		Scheme:          plan.Scheme.ValueString(),
-		DestinationPort: int(plan.DestinationPort.ValueInt64()),
-		RoleIDs:         []int{},
-		UserIDs:         []string{},
-		ClientIDs:       []int{},
-	})
+	siteRes, err := r.client.CreateSiteResource(ctx, buildCreateSiteResourceRequest(plan))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create site resource", err.Error())
+		resp.Diagnostics.AddError("Failed to create site resource", createSiteResourceErrorDetail(plan.Mode.ValueString(), err))
 		return
 	}
 
@@ -345,24 +360,7 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), &client.UpdateSiteResourceRequest{
-		Name:            plan.Name.ValueString(),
-		SiteID:          int(plan.SiteID.ValueInt64()),
-		Destination:     plan.Destination.ValueString(),
-		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
-		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
-		PamMode:         plan.PamMode.ValueString(),
-		DomainID:        plan.DomainID.ValueString(),
-		Subdomain:       plan.Subdomain.ValueString(),
-		Scheme:          plan.Scheme.ValueString(),
-		DestinationPort: int(plan.DestinationPort.ValueInt64()),
-		RoleIDs:         []int{},
-		UserIDs:         []string{},
-		ClientIDs:       []int{},
-	})
+	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), buildUpdateSiteResourceRequest(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site resource", err.Error())
 		return
@@ -406,6 +404,240 @@ func (r *SitePrivateResource) ImportState(ctx context.Context, req resource.Impo
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
+// createSiteResourceErrorDetail adds a version hint to a create error
+// in gateway mode: a pre-1.24 server rejects the mode itself with a
+// validation error ("Invalid option: expected one of ... at \"mode\"").
+// Errors that name another field (duplicate name, bad site_id) get no
+// hint. Only the field name is matched, not the client's status
+// formatting; once client.ErrBadRequest exists (#1), this should also
+// require errors.Is(err, client.ErrBadRequest).
+func createSiteResourceErrorDetail(mode string, err error) string {
+	detail := err.Error()
+	if mode == siteResourceModeGateway && strings.Contains(detail, `"mode"`) {
+		detail += "\n\n`mode = \"gateway\"` requires Pangolin 1.24 or later: an older server " +
+			"rejects the mode with a validation error on `mode`."
+	}
+	return detail
+}
+
+// buildCreateSiteResourceRequest maps the plan to the create payload.
+// In gateway mode the server-forced attributes are left off the body
+// (an empty `destination` would fail its validation). disable_icmp is
+// always planned false there, which the omitempty tag already drops.
+func buildCreateSiteResourceRequest(plan SitePrivateResourceModel) *client.CreateSiteResourceRequest {
+	req := &client.CreateSiteResourceRequest{
+		Name:            plan.Name.ValueString(),
+		SiteID:          int(plan.SiteID.ValueInt64()),
+		Mode:            plan.Mode.ValueString(),
+		Destination:     plan.Destination.ValueString(),
+		Alias:           plan.Alias.ValueString(),
+		TCPPortRange:    plan.TCPPortRange.ValueString(),
+		UDPPortRange:    plan.UDPPortRange.ValueString(),
+		DisableICMP:     plan.DisableICMP.ValueBool(),
+		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
+		PamMode:         plan.PamMode.ValueString(),
+		DomainID:        plan.DomainID.ValueString(),
+		Subdomain:       plan.Subdomain.ValueString(),
+		Scheme:          plan.Scheme.ValueString(),
+		DestinationPort: int(plan.DestinationPort.ValueInt64()),
+		RoleIDs:         []int{},
+		UserIDs:         []string{},
+		ClientIDs:       []int{},
+	}
+	if plan.Mode.ValueString() == siteResourceModeGateway {
+		req.Destination = ""
+		req.TCPPortRange = ""
+		req.UDPPortRange = ""
+	}
+	return req
+}
+
+// buildUpdateSiteResourceRequest maps the plan to the update payload.
+// A gateway resource sends its mode, so that the server re-applies the
+// forced gateway values, and no destination.
+func buildUpdateSiteResourceRequest(plan SitePrivateResourceModel) *client.UpdateSiteResourceRequest {
+	req := &client.UpdateSiteResourceRequest{
+		Name:            plan.Name.ValueString(),
+		SiteID:          int(plan.SiteID.ValueInt64()),
+		Destination:     plan.Destination.ValueString(),
+		Alias:           plan.Alias.ValueString(),
+		TCPPortRange:    plan.TCPPortRange.ValueString(),
+		UDPPortRange:    plan.UDPPortRange.ValueString(),
+		DisableICMP:     plan.DisableICMP.ValueBool(),
+		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
+		PamMode:         plan.PamMode.ValueString(),
+		DomainID:        plan.DomainID.ValueString(),
+		Subdomain:       plan.Subdomain.ValueString(),
+		Scheme:          plan.Scheme.ValueString(),
+		DestinationPort: int(plan.DestinationPort.ValueInt64()),
+		RoleIDs:         []int{},
+		UserIDs:         []string{},
+		ClientIDs:       []int{},
+	}
+	if plan.Mode.ValueString() == siteResourceModeGateway {
+		req.Mode = siteResourceModeGateway
+		req.Destination = ""
+		req.TCPPortRange = ""
+		req.UDPPortRange = ""
+	}
+	return req
+}
+
+// ValidateConfig requires `destination` outside gateway mode (it is
+// Optional in the schema only because gateway mode has none) and
+// rejects, in gateway mode, a value the server would overwrite: the
+// apply would otherwise end in "Provider produced inconsistent result".
+// It also rejects, in gateway mode, the attributes that mode has no
+// use for (alias, domain_id, subdomain, scheme, destination_port).
+// An unknown `mode` is skipped here: Terraform validates the config
+// again with the final values when it plans the resource, so a mode
+// known only at apply still gets these errors before any API call.
+func (r *SitePrivateResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg SitePrivateResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() || cfg.Mode.IsUnknown() || cfg.Mode.IsNull() {
+		return
+	}
+
+	mode := cfg.Mode.ValueString()
+	checkString := func(attr string, v types.String, forced string) {
+		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != forced {
+			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %q.", mode, forced))
+		}
+	}
+	checkBool := func(attr string, v types.Bool, forced bool) {
+		if !v.IsNull() && !v.IsUnknown() && v.ValueBool() != forced {
+			resp.Diagnostics.AddAttributeError(path.Root(attr), fmt.Sprintf("Value overridden in %s mode", mode),
+				fmt.Sprintf("Pangolin forces this value for `mode = %q`; leave the attribute unset. The server sets %t.", mode, forced))
+		}
+	}
+
+	switch mode {
+	case siteResourceModeGateway:
+		// checked below
+	case "host", "cidr", "http":
+		if cfg.Destination.IsNull() {
+			resp.Diagnostics.AddAttributeError(path.Root("destination"), "Missing destination",
+				fmt.Sprintf("`destination` is required when `mode = %q`.", mode))
+		}
+		if mode == "http" {
+			// The create handler forces these for an http resource
+			// (tcp "443,80" since 1.20 and ICMP disabled), so any other
+			// configured value ends in an inconsistent result.
+			checkString("tcp_port_range", cfg.TCPPortRange, httpTCPPortRange)
+			checkBool("disable_icmp", cfg.DisableICMP, true)
+			// UDP has no use in http mode: 1.24 stores "", older
+			// servers store the value unused. Warn only; the configured
+			// value is kept in state (see hydrateSiteResourceState).
+			if v := cfg.UDPPortRange; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
+				resp.Diagnostics.AddAttributeWarning(path.Root("udp_port_range"), "Value ignored in http mode",
+					"`udp_port_range` has no effect when `mode = \"http\"`; Pangolin 1.24 stores \"\" instead. "+
+						"The configured value is kept in the Terraform state. Remove it to silence this warning.")
+			}
+		}
+		return
+	default:
+		// An unsupported mode is already reported by the OneOf validator.
+		return
+	}
+
+	checkString("destination", cfg.Destination, gatewayDestination)
+	checkString("tcp_port_range", cfg.TCPPortRange, gatewayPortRange)
+	checkString("udp_port_range", cfg.UDPPortRange, gatewayPortRange)
+	checkBool("disable_icmp", cfg.DisableICMP, gatewayDisableICMP)
+
+	// Attributes a gateway resource has no use for: the server would
+	// store them silently, so refuse them rather than pretend they do
+	// something.
+	unused := func(attr string, set bool) {
+		if set {
+			resp.Diagnostics.AddAttributeError(path.Root(attr), "Attribute not supported in gateway mode",
+				fmt.Sprintf("`%s` has no effect when `mode = \"gateway\"`; remove it.", attr))
+		}
+	}
+	knownString := func(v types.String) bool { return !v.IsNull() && !v.IsUnknown() }
+	unused("alias", knownString(cfg.Alias))
+	unused("domain_id", knownString(cfg.DomainID))
+	unused("subdomain", knownString(cfg.Subdomain))
+	unused("scheme", knownString(cfg.Scheme))
+	unused("destination_port", !cfg.DestinationPort.IsNull() && !cfg.DestinationPort.IsUnknown())
+}
+
+// httpUDPPortRange keeps a known non-empty prior/planned UDP range when an
+// http-mode resource reads back "": Pangolin 1.24 forces "" there while
+// the value has no effect in that mode, so keeping the configured value
+// avoids an inconsistent result without hiding real drift elsewhere.
+func httpUDPPortRange(prior types.String, siteRes *client.SiteResource) types.String {
+	if siteRes.Mode == "http" && siteRes.UDPPortRange == "" &&
+		!prior.IsNull() && !prior.IsUnknown() && prior.ValueString() != "" {
+		return prior
+	}
+	return types.StringValue(siteRes.UDPPortRange)
+}
+
+// gatewayForcedModifier plans the value the server forces in gateway
+// mode, so the plan shows it instead of "(known after apply)", and an
+// in-place update re-plans it even if the state drifted from it (the
+// update body then names the mode, and the server re-forces it).
+// A replacement into gateway mode is re-planned by Terraform with a
+// null prior state, so UseStateForUnknown cannot carry the previous
+// mode's value over in that case. One type serves the string and the
+// bool attributes: only the field matching the attribute is set.
+type gatewayForcedModifier struct {
+	str types.String
+	b   types.Bool
+}
+
+func gatewayForcedString(value string) planmodifier.String {
+	return gatewayForcedModifier{str: types.StringValue(value)}
+}
+
+func gatewayForcedBool(value bool) planmodifier.Bool {
+	return gatewayForcedModifier{b: types.BoolValue(value)}
+}
+
+func (m gatewayForcedModifier) Description(_ context.Context) string {
+	if !m.str.IsNull() {
+		return fmt.Sprintf("Set to %q when mode is gateway.", m.str.ValueString())
+	}
+	return fmt.Sprintf("Set to %t when mode is gateway.", m.b.ValueBool())
+}
+
+func (m gatewayForcedModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+// applies reports whether the forced value must be planned: the
+// resource is not being destroyed, the attribute is unset in config
+// and the planned mode is a known "gateway".
+func (m gatewayForcedModifier) applies(ctx context.Context, plan tfsdk.Plan, configNull bool, diags *diag.Diagnostics) bool {
+	return !plan.Raw.IsNull() && configNull && planIsGatewayMode(ctx, plan, diags)
+}
+
+func (m gatewayForcedModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if m.applies(ctx, req.Plan, req.ConfigValue.IsNull(), &resp.Diagnostics) {
+		resp.PlanValue = m.str
+	}
+}
+
+func (m gatewayForcedModifier) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if m.applies(ctx, req.Plan, req.ConfigValue.IsNull(), &resp.Diagnostics) {
+		resp.PlanValue = m.b
+	}
+}
+
+// planIsGatewayMode reports whether the planned `mode` is a known
+// "gateway".
+func planIsGatewayMode(ctx context.Context, plan tfsdk.Plan, diags *diag.Diagnostics) bool {
+	var mode types.String
+	diags.Append(plan.GetAttribute(ctx, path.Root("mode"), &mode)...)
+	if diags.HasError() {
+		return false
+	}
+	return !mode.IsUnknown() && !mode.IsNull() && mode.ValueString() == siteResourceModeGateway
+}
+
 // hydrateSiteResourceState copies every server-owned field from a
 // freshly-fetched SiteResource into the TF state model. The caller
 // must populate state.ID separately (it's the import-time key and
@@ -424,7 +656,7 @@ func hydrateSiteResourceState(state *SitePrivateResourceModel, siteRes *client.S
 	state.Destination = types.StringValue(siteRes.Destination)
 	state.Alias = types.StringValue(siteRes.Alias)
 	state.TCPPortRange = types.StringValue(siteRes.TCPPortRange)
-	state.UDPPortRange = types.StringValue(siteRes.UDPPortRange)
+	state.UDPPortRange = httpUDPPortRange(state.UDPPortRange, siteRes)
 	state.DisableICMP = types.BoolValue(siteRes.DisableICMP)
 	state.AuthDaemonMode = types.StringValue(siteRes.AuthDaemonMode)
 	state.AuthDaemonPort = types.Int64Value(int64(siteRes.AuthDaemonPort))
