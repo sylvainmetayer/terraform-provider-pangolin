@@ -641,19 +641,22 @@ func (m hcHealthPlanModifier) PlanModifyString(ctx context.Context, req planmodi
 	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || !req.PlanValue.IsUnknown() {
 		return
 	}
-	var hcEnabled types.Bool
-	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("hc_enabled"), &hcEnabled)...)
+	hcEnabledPath := path.Root("hc_enabled")
+	var planned, configured, prior types.Bool
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, hcEnabledPath, &planned)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, hcEnabledPath, &configured)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, hcEnabledPath, &prior)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.PlanValue = planHCHealth(hcEnabled)
-}
-
-// planHCHealth returns the hc_health value Pangolin will answer an
-// update with, or unknown when only the probe can tell.
-func planHCHealth(hcEnabled types.Bool) types.String {
-	if !hcEnabled.IsNull() && !hcEnabled.IsUnknown() && !hcEnabled.ValueBool() {
-		return types.StringValue("unknown")
+	// Every attribute modifier sees the plan as it stood before any of
+	// them ran: hc_enabled left out of the configuration is still
+	// unknown here, and its own UseStateForUnknown will resolve it to
+	// the prior value, which is what Update then sends.
+	if planned.IsUnknown() && !configured.IsUnknown() {
+		planned = prior
 	}
-	return types.StringUnknown()
+	if planned.Equal(types.BoolValue(false)) {
+		resp.PlanValue = types.StringValue("unknown")
+	}
 }
