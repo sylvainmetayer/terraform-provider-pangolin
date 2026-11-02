@@ -66,6 +66,9 @@ type HTTPResourceModel struct {
 	AuthDaemonMode types.String `tfsdk:"auth_daemon_mode"`
 	AuthDaemonPort types.Int64  `tfsdk:"auth_daemon_port"`
 
+	// 1.22+ inference mode: attached AI providers.
+	AIProviderIDs types.Set `tfsdk:"ai_provider_ids"`
+
 	// 1.19+ mutable routing / auth injection.
 	SetHostHeader types.String          `tfsdk:"set_host_header"`
 	EnableProxy   types.Bool            `tfsdk:"enable_proxy"`
@@ -107,16 +110,15 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 	resp.Schema = schema.Schema{
 		Description: "Manages a Pangolin resource - the public-facing endpoint that Pangolin exposes. " +
 			"The `mode` attribute picks the transport: `http` (reverse-proxy the historical default), " +
-			"`tcp` or `udp` (raw L4). HTTP resources are addressed by `domain_id` + `subdomain`; " +
-			"L4 resources are addressed by `proxy_port` on the Pangolin edge.\n\n" +
+			"`ssh` / `rdp` / `vnc` (browser-based access, Pangolin >= 1.20), `inference` (AI gateway " +
+			"endpoint, Pangolin >= 1.22) or `tcp` / `udp` (raw L4). All modes except `tcp` / `udp` are " +
+			"addressed by `domain_id` + `subdomain`; L4 resources are addressed by `proxy_port` on the " +
+			"Pangolin edge.\n\n" +
 			"> **Note:** the 1.19+ attributes (`mode`, `pam_mode`, `auth_daemon_*`, `set_host_header`, " +
 			"`enable_proxy`, `headers`, `proxy_protocol*`, `maintenance_*`, `post_auth_path`, " +
 			"`skip_to_idp_id`, `resource_guid`, `health`, `resource_policy_id`, `default_resource_policy_id`) " +
 			"are only meaningful on Pangolin >= 1.19. On older servers they either fall back to the " +
-			"server default or stay absent from the wire (Optional+Computed keeps state consistent).\n\n" +
-			"> **Note:** SSH / RDP / VNC bastions are `mode = \"tcp\"` resources with `pam_mode` and " +
-			"`auth_daemon_*` set. The Pangolin server does not yet accept `ssh`/`rdp`/`vnc` as " +
-			"literal `mode` values.",
+			"server default or stay absent from the wire (Optional+Computed keeps state consistent).",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The numeric ID of the resource.",
@@ -140,8 +142,8 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"subdomain": schema.StringAttribute{
-				Description: "The subdomain for the resource. Only used when `mode = \"http\"`; ignored " +
-					"for L4 modes. Set to null to use the base domain.",
+				Description: "The subdomain for the resource. Used by every mode except `tcp` / `udp`; " +
+					"ignored for L4 modes. Set to null to use the base domain.",
 				Optional: true,
 				Validators: []validator.String{
 					// RFC 1123 label: lowercase letters, digits, hyphens; cannot
@@ -160,8 +162,8 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"domain_id": schema.StringAttribute{
-				Description: "The domain ID to attach this resource to. Required when `mode = \"http\"`, " +
-					"leave unset for L4 modes.",
+				Description: "The domain ID to attach this resource to. Required for `http`, `ssh`, " +
+					"`rdp`, `vnc` and `inference`; leave unset for L4 modes.",
 				Optional: true,
 				Computed: true,
 				PlanModifiers: []planmodifier.String{
@@ -185,12 +187,11 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"mode": schema.StringAttribute{
-				Description: "The resource mode. One of `http` (reverse proxy, default), `tcp` or `udp` " +
-					"(raw L4). Changing this attribute forces replacement.\n\n" +
-					"> **Note:** SSH / RDP / VNC bastion modes are configured by starting from `mode = " +
-					"\"tcp\"` and layering `pam_mode` / `auth_daemon_mode` / `auth_daemon_port`. " +
-					"The Pangolin server does **not** accept `\"ssh\"` / `\"rdp\"` / `\"vnc\"` as literal " +
-					"mode values yet (spec-ahead-of-server pattern in 1.19).",
+				Description: "The resource mode. One of `http` (reverse proxy, default), `ssh`, `rdp` " +
+					"or `vnc` (browser-based access, Pangolin >= 1.20), `inference` (AI gateway endpoint, " +
+					"Pangolin >= 1.22; see `ai_provider_ids`), `tcp` or `udp` (raw L4). `ssh` / `rdp` / " +
+					"`vnc` / `inference` require `domain_id` and do not take `proxy_port`. Targets created " +
+					"for the resource inherit its mode. Changing this attribute forces replacement.",
 				Optional: true,
 				Computed: true,
 				Default:  stringdefault.StaticString("http"),
@@ -198,12 +199,13 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
-					stringvalidator.OneOf("http", "tcp", "udp"),
+					stringvalidator.OneOf(resourceModes...),
 				},
 			},
 			"proxy_port": schema.Int64Attribute{
 				Description: "The proxy port that the Pangolin edge listens on for this L4 resource. " +
-					"Required for `ssh` / `rdp` / `vnc` / `tcp` / `udp` modes; ignored for `http`. " +
+					"Required for `tcp` / `udp` modes; must be left unset for `ssh` / `rdp` / `vnc` / " +
+					"`inference` and ignored for `http`. " +
 					"Changing this attribute forces replacement.",
 				Optional: true,
 				Computed: true,
@@ -228,11 +230,14 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"auth_daemon_mode": schema.StringAttribute{
-				Description: "Auth-daemon deployment mode for L4 resources. Typical values: `sidecar`, `remote`.",
+				Description: "Auth-daemon deployment mode for SSH resources. One of `site`, `remote` or `native`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.String{
+					stringvalidator.OneOf("site", "remote", "native"),
 				},
 			},
 			"auth_daemon_port": schema.Int64Attribute{
@@ -449,6 +454,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 		},
 	}
+	addResourceModeAttributes(resp.Schema.Attributes)
 }
 
 func (r *HTTPResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -470,29 +476,15 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// 1.19+ mode selection. `http` (or empty, on pre-1.19) is
-	// the legacy HTTP resource; anything else is a new L4 mode
-	// gated on `HTTP: false` server-side.
-	mode := plan.Mode.ValueString()
-	if mode == "" {
-		mode = "http"
-	}
-	createReq := &client.CreateResourceRequest{
-		Name:     plan.Name.ValueString(),
-		HTTP:     mode == "http",
-		DomainID: plan.DomainID.ValueString(),
-		Protocol: plan.Protocol.ValueString(),
-	}
-	if mode != "http" {
-		createReq.Mode = mode
-	}
-	if !plan.Subdomain.IsNull() && !plan.Subdomain.IsUnknown() {
-		subdomain := plan.Subdomain.ValueString()
-		createReq.Subdomain = &subdomain
-	}
-	if !plan.ProxyPort.IsNull() && !plan.ProxyPort.IsUnknown() {
-		v := int(plan.ProxyPort.ValueInt64())
-		createReq.ProxyPort = &v
+	// buildHTTPResourceCreateRequest picks the payload per mode: domain
+	// modes (http, ssh, rdp, vnc, inference) go with `http: true`, the
+	// tcp / udp L4 modes with `http: false`.
+	createReq, diags := buildHTTPResourceCreateRequest(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	aiConfigured, d := aiProviderIDsConfigured(ctx, req.Config)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 	// pam_mode / auth_daemon_* are refused by the server at Create
 	// (400 "Unrecognized keys"). They are applied on the follow-up
@@ -507,14 +499,24 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	plan.ID = types.Int64Value(int64(resource.ResourceID))
 	plan.NiceID = types.StringValue(resource.NiceID)
+	// Save the ID before any follow-up call: if one fails, Terraform
+	// taints the resource instead of losing track of it.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), plan.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// The providers sent in the create body are what the server holds.
+	createdProviders := plan.AIProviderIDs
 
 	// L4 resources (mode = tcp/udp) reject almost every scalar on
 	// the follow-up POST /resource/{id} - only `name`, `enabled`,
 	// and `proxyPort` are accepted, and proxyPort is create-only.
 	// So we hydrate from the Create response directly and skip the
-	// Update round-trip. L7 (http) still uses the historical
-	// Create + Update pattern so user-set sso/ssl/etc. are pushed.
-	if mode == "http" {
+	// Update round-trip. Domain modes (http, ssh, rdp, vnc,
+	// inference) share the server's HTTP update handler and keep the
+	// historical Create + Update pattern so user-set sso/ssl/etc. are
+	// pushed.
+	if resourceModeUsesDomain(plan.Mode.ValueString()) {
 		updated, err := r.client.UpdateResource(ctx, int(plan.ID.ValueInt64()), buildHTTPResourceUpdateRequest(plan))
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to apply resource settings after creation", err.Error())
@@ -524,6 +526,7 @@ func (r *HTTPResource) Create(ctx context.Context, req resource.CreateRequest, r
 		resource = updated
 	}
 	plan = applyHTTPResourceResponse(plan, resource)
+	resp.Diagnostics.Append(r.applyAIProviders(ctx, &plan, createdProviders, aiConfigured)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -543,6 +546,8 @@ func (r *HTTPResource) rollBackCreate(ctx context.Context, id int, resp *resourc
 			fmt.Sprintf("Resource %d was created but its settings could not be applied, so it was deleted again. "+
 				"The next apply creates it from scratch.", id),
 		)
+		// Create saved the ID before the follow-up: drop it, the object is gone.
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	resp.Diagnostics.AddError(
@@ -596,6 +601,7 @@ func (r *HTTPResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	state = applyHTTPResourceResponse(state, resource)
+	resp.Diagnostics.Append(r.refreshAIProviders(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -603,6 +609,8 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	var plan, state HTTPResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	aiConfigured, d := aiProviderIDsConfigured(ctx, req.Config)
+	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -613,7 +621,7 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// have written anyway.
 	updateReq := buildHTTPResourceUpdateRequest(plan)
 	clearRemovedHeaders(updateReq, plan, state)
-	if plan.Mode.ValueString() != "http" {
+	if !resourceModeUsesDomain(plan.Mode.ValueString()) {
 		updateReq = &client.UpdateResourceRequest{
 			Name:    plan.Name.ValueString(),
 			Enabled: updateReq.Enabled,
@@ -626,6 +634,7 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	plan = applyHTTPResourceResponse(plan, res)
+	resp.Diagnostics.Append(r.applyAIProviders(ctx, &plan, state.AIProviderIDs, aiConfigured)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -658,6 +667,7 @@ func (r *HTTPResource) ImportState(ctx context.Context, req resource.ImportState
 
 	state := HTTPResourceModel{ID: types.Int64Value(int64(res.ResourceID))}
 	state = applyHTTPResourceResponse(state, res)
+	resp.Diagnostics.Append(r.refreshAIProviders(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

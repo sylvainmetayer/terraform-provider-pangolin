@@ -30,7 +30,7 @@ func httpResourceObject(t *testing.T, s schema.Schema, set map[string]tftypes.Va
 	return tftypes.NewValue(objType, vals)
 }
 
-func httpResourceSchema(t *testing.T) schema.Schema {
+func httpResourceProtocolSchema(t *testing.T) schema.Schema {
 	t.Helper()
 	var resp resource.SchemaResponse
 	(&HTTPResource{}).Schema(context.Background(), resource.SchemaRequest{}, &resp)
@@ -38,7 +38,7 @@ func httpResourceSchema(t *testing.T) schema.Schema {
 }
 
 func TestProtocolFromModeModifier(t *testing.T) {
-	s := httpResourceSchema(t)
+	s := httpResourceProtocolSchema(t)
 	for _, tc := range []struct {
 		name  string
 		mode  tftypes.Value
@@ -73,7 +73,7 @@ func TestProtocolFromModeModifier(t *testing.T) {
 }
 
 func TestProtocolFromModeModifier_ConfiguredValueKept(t *testing.T) {
-	s := httpResourceSchema(t)
+	s := httpResourceProtocolSchema(t)
 	plan := tfsdk.Plan{Schema: s, Raw: httpResourceObject(t, s, map[string]tftypes.Value{
 		"mode": tftypes.NewValue(tftypes.String, "udp"),
 	})}
@@ -91,7 +91,7 @@ func TestProtocolFromModeModifier_ConfiguredValueKept(t *testing.T) {
 }
 
 func TestProtocolMatchesModeValidator(t *testing.T) {
-	s := httpResourceSchema(t)
+	s := httpResourceProtocolSchema(t)
 	for _, tc := range []struct {
 		name     string
 		mode     tftypes.Value
