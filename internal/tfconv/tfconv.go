@@ -60,3 +60,23 @@ func Float64FromPtr(p *float64) types.Float64 {
 	}
 	return types.Float64Value(*p)
 }
+
+// StringToPtr is the reverse of StringFromPtr: nil when v is null or
+// unknown, otherwise a pointer to its value. Use it to fill a request
+// field whose absence means "leave unchanged" on the server.
+func StringToPtr(v types.String) *string {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	s := v.ValueString()
+	return &s
+}
+
+// BoolToPtr is the reverse of BoolFromPtr, with StringToPtr's rules.
+func BoolToPtr(v types.Bool) *bool {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	b := v.ValueBool()
+	return &b
+}

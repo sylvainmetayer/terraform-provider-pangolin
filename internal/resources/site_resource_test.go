@@ -272,3 +272,44 @@ func TestSiteResource_JSONRoundTrip(t *testing.T) {
 		t.Errorf("FullDomain lost across round-trip")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// buildUpdateSiteResourceRequest: plan -> wire
+// -----------------------------------------------------------------------------
+
+func TestBuildUpdateSiteResourceRequest_KeepsGrantsAndSendsZeroValues(t *testing.T) {
+	// The update must never carry roleIds / userIds / clientIds (an empty
+	// list would wipe the grants of the _role / _user / _client
+	// resources), and must send "" / false since a missing key means
+	// "unchanged" on the server.
+	plan := SitePrivateResourceModel{
+		Name:           types.StringValue("db"),
+		SiteID:         types.Int64Value(5),
+		Mode:           types.StringValue("host"),
+		Destination:    types.StringValue("10.0.0.5"),
+		Alias:          types.StringValue("db.internal"),
+		TCPPortRange:   types.StringValue(""),
+		UDPPortRange:   types.StringNull(),
+		DisableICMP:    types.BoolValue(false),
+		AuthDaemonMode: types.StringValue("site"),
+	}
+	raw, err := json.Marshal(buildUpdateSiteResourceRequest(&plan))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"roleIds", "userIds", "clientIds", "udpPortRangeString"} {
+		if v, present := body[k]; present {
+			t.Errorf("%s must be omitted, got %s", k, v)
+		}
+	}
+	if string(body["tcpPortRangeString"]) != `""` || string(body["disableIcmp"]) != "false" {
+		t.Errorf("zero values dropped: %s", raw)
+	}
+	if string(body["name"]) != `"db"` || string(body["alias"]) != `"db.internal"` {
+		t.Errorf("scalars lost: %s", raw)
+	}
+}

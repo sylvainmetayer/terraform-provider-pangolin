@@ -292,9 +292,9 @@ func (r *SitePrivateResource) Create(ctx context.Context, req resource.CreateReq
 		Mode:            plan.Mode.ValueString(),
 		Destination:     plan.Destination.ValueString(),
 		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
+		TCPPortRange:    tfconv.StringToPtr(plan.TCPPortRange),
+		UDPPortRange:    tfconv.StringToPtr(plan.UDPPortRange),
+		DisableICMP:     tfconv.BoolToPtr(plan.DisableICMP),
 		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
 		PamMode:         plan.PamMode.ValueString(),
 		DomainID:        plan.DomainID.ValueString(),
@@ -345,24 +345,7 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), &client.UpdateSiteResourceRequest{
-		Name:            plan.Name.ValueString(),
-		SiteID:          int(plan.SiteID.ValueInt64()),
-		Destination:     plan.Destination.ValueString(),
-		Alias:           plan.Alias.ValueString(),
-		TCPPortRange:    plan.TCPPortRange.ValueString(),
-		UDPPortRange:    plan.UDPPortRange.ValueString(),
-		DisableICMP:     plan.DisableICMP.ValueBool(),
-		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
-		PamMode:         plan.PamMode.ValueString(),
-		DomainID:        plan.DomainID.ValueString(),
-		Subdomain:       plan.Subdomain.ValueString(),
-		Scheme:          plan.Scheme.ValueString(),
-		DestinationPort: int(plan.DestinationPort.ValueInt64()),
-		RoleIDs:         []int{},
-		UserIDs:         []string{},
-		ClientIDs:       []int{},
-	})
+	siteRes, err := r.client.UpdateSiteResource(ctx, int(plan.ID.ValueInt64()), buildUpdateSiteResourceRequest(&plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site resource", err.Error())
 		return
@@ -371,6 +354,29 @@ func (r *SitePrivateResource) Update(ctx context.Context, req resource.UpdateReq
 	hydrateSiteResourceState(&plan, siteRes)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// buildUpdateSiteResourceRequest maps the plan to the update body.
+// The port ranges and disable_icmp are sent whenever they are known, so
+// `""` and `false` reach the server instead of being dropped as "leave
+// unchanged". RoleIDs / UserIDs / ClientIDs stay nil: the grants belong
+// to the pangolin_site_resource_role / _user / _client resources.
+func buildUpdateSiteResourceRequest(plan *SitePrivateResourceModel) *client.UpdateSiteResourceRequest {
+	return &client.UpdateSiteResourceRequest{
+		Name:            plan.Name.ValueString(),
+		SiteID:          int(plan.SiteID.ValueInt64()),
+		Destination:     plan.Destination.ValueString(),
+		Alias:           plan.Alias.ValueString(),
+		TCPPortRange:    tfconv.StringToPtr(plan.TCPPortRange),
+		UDPPortRange:    tfconv.StringToPtr(plan.UDPPortRange),
+		DisableICMP:     tfconv.BoolToPtr(plan.DisableICMP),
+		AuthDaemonMode:  plan.AuthDaemonMode.ValueString(),
+		PamMode:         plan.PamMode.ValueString(),
+		DomainID:        plan.DomainID.ValueString(),
+		Subdomain:       plan.Subdomain.ValueString(),
+		Scheme:          plan.Scheme.ValueString(),
+		DestinationPort: int(plan.DestinationPort.ValueInt64()),
+	}
 }
 
 func (r *SitePrivateResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
