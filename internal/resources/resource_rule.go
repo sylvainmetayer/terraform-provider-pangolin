@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -23,6 +24,11 @@ var (
 	_ resource.Resource                = &ResourceRuleResource{}
 	_ resource.ResourceWithImportState = &ResourceRuleResource{}
 )
+
+// resourceRuleMatchTypes mirrors RESOURCE_RULE_MATCH_TYPES in Pangolin's
+// server/lib/validators.ts. The match validator and its description both
+// read it so they cannot drift.
+var resourceRuleMatchTypes = []string{"CIDR", "IP", "PATH", "COUNTRY", "COUNTRY_IS_NOT", "ASN", "REGION", "METHOD"}
 
 // ResourceRuleResource manages an access control rule for a Pangolin HTTP resource.
 type ResourceRuleResource struct {
@@ -75,15 +81,21 @@ func (r *ResourceRuleResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"match": schema.StringAttribute{
-				Description: "The match type: `CIDR`, `IP`, `PATH`, `COUNTRY`, or `ASN`.",
-				Required:    true,
+				Description: "The match type: `" + strings.Join(resourceRuleMatchTypes, "`, `") + "`. " +
+					"`COUNTRY_IS_NOT` matches requests from any country except `value`. " +
+					"`COUNTRY_IS_NOT`, `REGION` and `METHOD` need a Pangolin server that supports them (1.24 accepts all of them).",
+				Required: true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("CIDR", "IP", "PATH", "COUNTRY", "ASN"),
+					stringvalidator.OneOf(resourceRuleMatchTypes...),
 				},
 			},
 			"value": schema.StringAttribute{
-				Description: "The value to match against (e.g. CIDR range, IP address, path prefix, country code, ASN).",
-				Required:    true,
+				Description: "The value to match against. The server checks its format against `match`: " +
+					"a CIDR range for `CIDR` (e.g. `10.0.0.0/8`), an IP address for `IP`, a URL glob pattern for `PATH` (e.g. `/admin/*`), " +
+					"an ISO 3166-1 alpha-2 country code for `COUNTRY` and `COUNTRY_IS_NOT` (e.g. `FR`), " +
+					"an ASN for `ASN` (e.g. `AS13335`), a UN M49 region code for `REGION` (e.g. `150` for Europe, `015` for Northern Africa), " +
+					"or a comma-separated list of HTTP methods for `METHOD` (e.g. `POST,PUT,DELETE`).",
+				Required: true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
@@ -124,24 +136,13 @@ func (r *ResourceRuleResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	rule, err := r.client.CreateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), &client.SetResourceRuleRequest{
-		Action:   plan.Action.ValueString(),
-		Match:    plan.Match.ValueString(),
-		Value:    plan.Value.ValueString(),
-		Priority: int(plan.Priority.ValueInt64()),
-		Enabled:  plan.Enabled.ValueBool(),
-	})
+	rule, err := r.client.CreateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), resourceRuleRequestFromModel(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create resource rule", err.Error())
 		return
 	}
 
-	plan.ID = types.Int64Value(int64(rule.RuleID))
-	plan.Action = types.StringValue(rule.Action)
-	plan.Match = types.StringValue(rule.Match)
-	plan.Value = types.StringValue(rule.Value)
-	plan.Priority = types.Int64Value(int64(rule.Priority))
-	plan.Enabled = types.BoolValue(rule.Enabled)
+	plan = applyResourceRuleResponse(plan, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -163,11 +164,7 @@ func (r *ResourceRuleResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	state.Action = types.StringValue(rule.Action)
-	state.Match = types.StringValue(rule.Match)
-	state.Value = types.StringValue(rule.Value)
-	state.Priority = types.Int64Value(int64(rule.Priority))
-	state.Enabled = types.BoolValue(rule.Enabled)
+	state = applyResourceRuleResponse(state, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -179,23 +176,13 @@ func (r *ResourceRuleResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	rule, err := r.client.UpdateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), int(plan.ID.ValueInt64()), &client.SetResourceRuleRequest{
-		Action:   plan.Action.ValueString(),
-		Match:    plan.Match.ValueString(),
-		Value:    plan.Value.ValueString(),
-		Priority: int(plan.Priority.ValueInt64()),
-		Enabled:  plan.Enabled.ValueBool(),
-	})
+	rule, err := r.client.UpdateResourceRule(ctx, int(plan.ResourceID.ValueInt64()), int(plan.ID.ValueInt64()), resourceRuleRequestFromModel(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update resource rule", err.Error())
 		return
 	}
 
-	plan.Action = types.StringValue(rule.Action)
-	plan.Match = types.StringValue(rule.Match)
-	plan.Value = types.StringValue(rule.Value)
-	plan.Priority = types.Int64Value(int64(rule.Priority))
-	plan.Enabled = types.BoolValue(rule.Enabled)
+	plan = applyResourceRuleResponse(plan, rule)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -214,42 +201,58 @@ func (r *ResourceRuleResource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 }
 
+// ImportState only records the two IDs from the "{resource_id}/{rule_id}"
+// address; the framework's follow-up Read fills the rest, and a rule that
+// does not exist surfaces there as "Cannot import non-existent remote
+// object". resource_id must come from the address: the rules list does not
+// carry it (see client.ResourceRule).
 func (r *ResourceRuleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import format: "{resource_id}/{rule_id}"
-	idx := strings.Index(req.ID, "/")
-	if idx < 0 {
-		resp.Diagnostics.AddError("Invalid import ID", fmt.Sprintf("Expected format: {resource_id}/{rule_id}, got: %q", req.ID))
-		return
-	}
-
-	resourceIDStr := req.ID[:idx]
-	ruleIDStr := req.ID[idx+1:]
-
-	resourceID, err := strconv.ParseInt(resourceIDStr, 10, 64)
+	resourceID, ruleID, err := parseResourceRuleImportID(req.ID)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid resource ID", fmt.Sprintf("Cannot parse %q as integer", resourceIDStr))
+		resp.Diagnostics.AddError("Invalid import ID", err.Error())
 		return
 	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), ruleID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("resource_id"), resourceID)...)
+}
 
-	ruleID, err := strconv.ParseInt(ruleIDStr, 10, 64)
+// parseResourceRuleImportID splits a "{resource_id}/{rule_id}" import ID.
+func parseResourceRuleImportID(id string) (resourceID, ruleID int64, err error) {
+	resourceIDStr, ruleIDStr, ok := strings.Cut(id, "/")
+	if !ok {
+		return 0, 0, fmt.Errorf("expected format {resource_id}/{rule_id}, got: %q", id)
+	}
+	resourceID, err = strconv.ParseInt(resourceIDStr, 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid rule ID", fmt.Sprintf("Cannot parse %q as integer", ruleIDStr))
-		return
+		return 0, 0, fmt.Errorf("cannot parse resource ID %q as integer", resourceIDStr)
 	}
-
-	rule, err := r.client.GetResourceRule(ctx, int(resourceID), int(ruleID))
+	ruleID, err = strconv.ParseInt(ruleIDStr, 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to import resource rule", err.Error())
-		return
+		return 0, 0, fmt.Errorf("cannot parse rule ID %q as integer", ruleIDStr)
 	}
+	return resourceID, ruleID, nil
+}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &ResourceRuleModel{
-		ID:         types.Int64Value(int64(rule.RuleID)),
-		ResourceID: types.Int64Value(int64(rule.ResourceID)),
-		Action:     types.StringValue(rule.Action),
-		Match:      types.StringValue(rule.Match),
-		Value:      types.StringValue(rule.Value),
-		Priority:   types.Int64Value(int64(rule.Priority)),
-		Enabled:    types.BoolValue(rule.Enabled),
-	})...)
+// resourceRuleRequestFromModel builds the create/update payload. Every
+// field is Required (enabled has a default), so the payload is complete.
+func resourceRuleRequestFromModel(m ResourceRuleModel) *client.SetResourceRuleRequest {
+	return &client.SetResourceRuleRequest{
+		Action:   m.Action.ValueString(),
+		Match:    m.Match.ValueString(),
+		Value:    m.Value.ValueString(),
+		Priority: int(m.Priority.ValueInt64()),
+		Enabled:  m.Enabled.ValueBool(),
+	}
+}
+
+// applyResourceRuleResponse copies the server's view of a rule onto m.
+// resource_id is left untouched: it comes from config or the import address.
+func applyResourceRuleResponse(m ResourceRuleModel, rule *client.ResourceRule) ResourceRuleModel {
+	m.ID = types.Int64Value(int64(rule.RuleID))
+	m.Action = types.StringValue(rule.Action)
+	m.Match = types.StringValue(rule.Match)
+	m.Value = types.StringValue(rule.Value)
+	m.Priority = types.Int64Value(int64(rule.Priority))
+	m.Enabled = types.BoolValue(rule.Enabled)
+	return m
 }
