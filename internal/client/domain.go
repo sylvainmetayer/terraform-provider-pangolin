@@ -30,7 +30,7 @@ type CreateDomainResponse struct {
 // Community Edition only `type = "wildcard"` is accepted (ns and
 // cname answer 501).
 func (c *Client) CreateDomain(ctx context.Context, orgID string, req *CreateDomainRequest) (string, error) {
-	resp, err := c.doRequest(ctx, "PUT", fmt.Sprintf("/org/%s/domain", orgID), req)
+	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/domain", orgID), req)
 	if err != nil {
 		return "", err
 	}
