@@ -29,7 +29,7 @@ resource "pangolin_resource" "web" {
   name      = "my-app"
   subdomain = "app"
   domain_id = data.pangolin_domains.all.domains[0].domain_id
-  protocol  = "tcp"
+  mode      = "http"
   sso       = false # public access, no Pangolin authentication
 }
 
@@ -138,7 +138,7 @@ resource "pangolin_resource" "under_maintenance" {
 > **Note:** SSH / RDP / VNC bastion modes are configured by starting from `mode = "tcp"` and layering `pam_mode` / `auth_daemon_mode` / `auth_daemon_port`. The Pangolin server does **not** accept `"ssh"` / `"rdp"` / `"vnc"` as literal mode values yet (spec-ahead-of-server pattern in 1.19).
 - `pam_mode` (String) PAM (Pluggable Authentication Module) mode for SSH resources. One of `passthrough` or `push`. Only meaningful for `mode = "ssh"`.
 - `post_auth_path` (String) Landing path after a successful login (e.g. `/dashboard`).
-- `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / `tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.
+- `protocol` (String, Deprecated) Deprecated: use `mode`. The L4 protocol (tcp or udp). Legacy alias: Pangolin derives the transport from `mode`, so this follows `mode` for `tcp` / `udp` resources (setting another value is an error) and is `tcp` for `http`, where it is ignored. Leave it unset.
 - `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `ssh` / `rdp` / `vnc` / `tcp` / `udp` modes; ignored for `http`. Changing this attribute forces replacement.
 - `response_headers` (Attributes List) Static headers added to the response sent back to the client - list of `{name, value}` objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. Only for `mode = "http"`. This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed on the next apply when the attribute is absent from the config. Removing the attribute, or setting it to `[]`, clears the headers on the server. Limitation: the clear is only sent when the prior state holds response headers (older servers refuse the key), so headers added outside Terraform are only removed by an apply that refreshed first (not with `-refresh=false`). Header values are sensitive. (see [below for nested schema](#nestedatt--response_headers))
 - `set_host_header` (String) Override the upstream `Host` header. Only meaningful for `mode = "http"`. Set to null to keep the incoming host.
