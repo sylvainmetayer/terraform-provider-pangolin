@@ -197,6 +197,7 @@ func (p *PangolinProvider) Resources(_ context.Context) []func() resource.Resour
 		resources.NewAPIKeyActionsResource,
 		resources.NewOrgIDPResource,
 		resources.NewDomainResource,
+		resources.NewAlertRuleResource,
 	}
 }
 
@@ -227,6 +228,8 @@ func (p *PangolinProvider) DataSources(_ context.Context) []func() datasource.Da
 		datasources.NewAccessLogsDataSource,
 		datasources.NewActionLogsDataSource,
 		datasources.NewConnectionLogsDataSource,
+		datasources.NewAlertRulesDataSource,
+		datasources.NewAlertRuleDataSource,
 	}
 }
 

@@ -19,6 +19,15 @@ func StringFromPtr(p *string) types.String {
 	return types.StringValue(*p)
 }
 
+// StringFromNonEmptyPtr is [StringFromPtr] with "" also mapped to null.
+// Use when the upstream drops empty values, so "" never round-trips.
+func StringFromNonEmptyPtr(p *string) types.String {
+	if p == nil || *p == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(*p)
+}
+
 // BoolFromPtr returns types.BoolNull() when p is nil, otherwise
 // types.BoolValue(*p).
 func BoolFromPtr(p *bool) types.Bool {

@@ -71,6 +71,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_idp` | OIDC Identity Provider (global) |
 | `pangolin_idp_org` | IDP-to-organization policy mapping |
 | `pangolin_org_idp` | OIDC IDP scoped to a single organization (single-resource alternative to `pangolin_idp` + `pangolin_idp_org`) |
+| `pangolin_alert_rule` | Alert rule: email and webhook notifications on site, health check or resource events (Enterprise) |
 
 ## Data Sources
 
@@ -98,6 +99,8 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_access_logs` | Query the access audit log (per-request access decisions) |
 | `pangolin_action_logs` | Query the action audit log (admin/mutation actions) |
 | `pangolin_connection_logs` | Query the connection audit log (VPN/tunnel lifecycle events) |
+| `pangolin_alert_rules` | List alert rules (filter by name and enabled state) (Enterprise) |
+| `pangolin_alert_rule` | Single alert rule lookup by ID (with recipients and webhook actions) (Enterprise) |
 | `pangolin_logs_analytics` | Aggregate analytics rollup (per-country, per-day, totals) |
 | `pangolin_blueprints` | List the blueprint (declarative apply) audit records for the org |
 | `pangolin_blueprint` | Single blueprint lookup by ID (exposes raw `contents` + apply outcome) |
