@@ -54,6 +54,21 @@ resource "pangolin_resource" "web_advanced" {
   ]
 }
 
+# Response headers (Pangolin >= 1.24 only: older servers reject the
+# key, so leave `response_headers` unset there). Removing either list
+# from the config clears it on the server.
+resource "pangolin_resource" "web_hardened" {
+  name      = "public-app"
+  subdomain = "public"
+  domain_id = data.pangolin_domains.all.domains[0].domain_id
+  mode      = "http"
+
+  response_headers = [
+    { name = "Strict-Transport-Security", value = "max-age=63072000" },
+    { name = "X-Content-Type-Options", value = "nosniff" },
+  ]
+}
+
 # ---------------------------------------------------------------------
 # SSH bastion - a `mode = "tcp"` resource fronted by the Pangolin
 # auth-daemon on the edge. `pam_mode = "push"` triggers a
@@ -112,7 +127,7 @@ resource "pangolin_resource" "under_maintenance" {
 - `domain_id` (String) The domain ID to attach this resource to. Required when `mode = "http"`, leave unset for L4 modes.
 - `email_whitelist_enabled` (Boolean) Enable the email whitelist on this resource.
 - `enabled` (Boolean) Enable or disable the resource.
-- `headers` (Attributes List) Static request headers injected on the upstream request - list of `{name, value}` objects. Leave unset to keep the server default (no injection). Cannot be marked Computed because the Go slice model type in the plugin framework does not carry an "unknown" sentinel. (see [below for nested schema](#nestedatt--headers))
+- `headers` (Attributes List) Static request headers injected on the upstream request - list of `{name, value}` objects. Only for `mode = "http"`. This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed on the next apply when the attribute is absent from the config, as are the ones it no longer lists. Removing the attribute, or setting it to `[]`, clears the headers on the server. Header values are sensitive. Cannot be marked Computed because the Go slice model type in the plugin framework does not carry an "unknown" sentinel. (see [below for nested schema](#nestedatt--headers))
 - `maintenance_estimated_time` (String) Free-form estimated end-of-maintenance timestamp / duration (surfaced on the maintenance page).
 - `maintenance_message` (String) Maintenance page body message.
 - `maintenance_mode_enabled` (Boolean) Serve a maintenance page (or reject the L4 connection) instead of proxying.
@@ -125,6 +140,7 @@ resource "pangolin_resource" "under_maintenance" {
 - `post_auth_path` (String) Landing path after a successful login (e.g. `/dashboard`).
 - `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `ssh` / `rdp` / `vnc` / `tcp` / `udp` L4 modes; ignored for `http`. Defaults to `tcp`.
 - `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `ssh` / `rdp` / `vnc` / `tcp` / `udp` modes; ignored for `http`. Changing this attribute forces replacement.
+- `response_headers` (Attributes List) Static headers added to the response sent back to the client - list of `{name, value}` objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. Only for `mode = "http"`. This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed on the next apply when the attribute is absent from the config. Removing the attribute, or setting it to `[]`, clears the headers on the server. Limitation: the clear is only sent when the prior state holds response headers (older servers refuse the key), so headers added outside Terraform are only removed by an apply that refreshed first (not with `-refresh=false`). Header values are sensitive. (see [below for nested schema](#nestedatt--response_headers))
 - `set_host_header` (String) Override the upstream `Host` header. Only meaningful for `mode = "http"`. Set to null to keep the incoming host.
 - `skip_to_idp_id` (Number) Bypass the Pangolin login page and jump straight to the given IdP.
 - `ssl` (Boolean) Enable SSL towards the backend.
@@ -153,7 +169,16 @@ resource "pangolin_resource" "under_maintenance" {
 Required:
 
 - `name` (String) Header name.
-- `value` (String) Header value.
+- `value` (String, Sensitive) Header value.
+
+
+<a id="nestedatt--response_headers"></a>
+### Nested Schema for `response_headers`
+
+Required:
+
+- `name` (String) Header name.
+- `value` (String, Sensitive) Header value.
 
 ## Import
 
