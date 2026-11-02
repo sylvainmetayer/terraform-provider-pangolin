@@ -1,0 +1,1 @@
+terraform import pangolin_resource_policy_header_auth.example <resource_policy_id>

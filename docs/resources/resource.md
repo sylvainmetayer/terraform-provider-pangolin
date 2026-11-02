@@ -162,6 +162,9 @@ resource "pangolin_resource" "under_maintenance" {
 - `response_headers` (Attributes List) Static headers added to the response sent back to the client - list of `{name, value}` objects. Requires Pangolin >= 1.24: older servers reject the key, so leave it unset there. Only for `mode = "http"`. This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed on the next apply when the attribute is absent from the config. Removing the attribute, or setting it to `[]`, clears the headers on the server. Limitation: the clear is only sent when the prior state holds response headers (older servers refuse the key), so headers added outside Terraform are only removed by an apply that refreshed first (not with `-refresh=false`). Header values are sensitive. (see [below for nested schema](#nestedatt--response_headers))
 - `protocol` (String) The L4 protocol (tcp or udp). Only meaningful for the `tcp` / `udp` L4 modes; ignored for the other modes. Defaults to `tcp`.
 - `proxy_port` (Number) The proxy port that the Pangolin edge listens on for this L4 resource. Required for `tcp` / `udp` modes; must be left unset for `ssh` / `rdp` / `vnc` / `inference` and ignored for `http`. Changing this attribute forces replacement.
+- `resource_policy_id` (Number) ID of the shared resource policy (`pangolin_resource_policy`, Enterprise) this resource is attached to. Set a policy ID to attach the resource, or `0` to detach it and fall back to its own inline policy. Leaving it unset keeps the current attachment, including one made outside Terraform, so upgrading the provider or omitting the attribute never detaches a resource. Only shared policies are accepted: the inline default policy of another resource is refused before any change.
+
+> **Note:** Pangolin wipes the resource-level password, PIN code, header auth, email whitelist, rules and user / role grants (except the admin role) whenever the attachment changes, so the policy fully governs access. Resource-level `pangolin_resource_password`, `pangolin_resource_rule`, `pangolin_resource_role` and similar resources then drift and are recreated on the next apply. While attached, `sso`, `email_whitelist_enabled`, `apply_rules` and `skip_to_idp_id` set on this resource override the shared policy for this resource only.
 - `set_host_header` (String) Override the upstream `Host` header. Only meaningful for `mode = "http"`. Set to null to keep the incoming host.
 - `skip_to_idp_id` (Number) Bypass the Pangolin login page and jump straight to the given IdP.
 - `ssl` (Boolean) Enable SSL towards the backend.
@@ -181,7 +184,6 @@ resource "pangolin_resource" "under_maintenance" {
 - `proxy_protocol` (Boolean) Whether PROXY-protocol encapsulation is on for the upstream L4 socket. Read-only in the current provider - the server-side POST endpoint refuses this key.
 - `proxy_protocol_version` (Number) PROXY-protocol version (1 or 2). Read-only in the current provider - the server-side POST endpoint refuses this key.
 - `resource_guid` (String) Server-assigned globally unique identifier (1.19+).
-- `resource_policy_id` (Number) ID of the shared resource-policy this resource is attached to (1.19+). Read-only: the resource-policy CRUD endpoints require an API key scoped to resource policies and are not exposed via this provider.
 - `wildcard` (Boolean) Whether the resource matches a wildcard subdomain (1.19+).
 
 <a id="nestedatt--headers"></a>
