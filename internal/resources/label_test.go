@@ -1,6 +1,9 @@
 package resources
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestLabelColorPattern(t *testing.T) {
 	for color, want := range map[string]bool{"#ff0000": true, "FF0000": true, "#abc": true, "abcd": false, "#ggg": false, "": false} {
@@ -20,7 +23,7 @@ func TestParseLabelAttachmentID_RoundTrip(t *testing.T) {
 		if got := m.LabelID.ValueInt64(); got != 4 {
 			t.Errorf("%s: label = %d", id, got)
 		}
-		if id != "4/"+kind+"/"+string(rune('0'+target)) {
+		if id != fmt.Sprintf("4/%s/%d", kind, target) {
 			t.Errorf("%s: kind %s, target %d", id, kind, target)
 		}
 	}

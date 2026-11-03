@@ -111,6 +111,8 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_api_key_actions` | Set of actions (permissions) granted to an API key |
 | `pangolin_org_idp` | OIDC IDP scoped to a single organization (single-resource alternative to `pangolin_idp` + `pangolin_idp_org`) |
 | `pangolin_domain` | Domain of the organization (wildcard, NS or CNAME) with the DNS records to create |
+| `pangolin_label` | Label of the organization |
+| `pangolin_label_attachment` | Attach a label to a site, a public or private resource, or a machine client |
 
 ## Data Sources
 

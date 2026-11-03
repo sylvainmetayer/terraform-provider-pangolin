@@ -54,34 +54,75 @@ func (c *Client) CreateLabel(ctx context.Context, req *LabelRequest) (*Label, er
 	return parseLabel(resp.Data)
 }
 
+// walkOrgList walks the paginated list /org/{org}/{route}, whose items sit
+// under key, and hands each item to visit until it answers true. query holds
+// extra query parameters, if any. A response without key or pagination.total
+// is an error: callers read a miss as "gone", which removes the object from
+// the state, so an unexpected shape must not look like one.
+func (c *Client) walkOrgList(ctx context.Context, route, query, key string, visit func(json.RawMessage) (bool, error)) error {
+	seen := 0
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/org/%s/%s?pageSize=%d&page=%d", c.OrgID, route, labelListPageSize, page)
+		if query != "" {
+			path += "&" + query
+		}
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return err
+		}
+		var out map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Data, &out); err != nil {
+			return fmt.Errorf("failed to parse %s: %w", route, err)
+		}
+		raw, ok := out[key]
+		if !ok {
+			return fmt.Errorf("%s response has no %q: %s", route, key, truncateForDiag(resp.Data))
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return fmt.Errorf("failed to parse %s: %w", route, err)
+		}
+		var pagination struct {
+			Total *int `json:"total"`
+		}
+		if err := json.Unmarshal(out["pagination"], &pagination); err != nil || pagination.Total == nil {
+			return fmt.Errorf("%s response has no pagination total: %s", route, truncateForDiag(resp.Data))
+		}
+		for _, item := range items {
+			done, err := visit(item)
+			if err != nil || done {
+				return err
+			}
+		}
+		seen += len(items)
+		if len(items) == 0 || seen >= *pagination.Total {
+			return nil
+		}
+	}
+}
+
 // GetLabel finds a label by ID. The API has no route for a single label, so
 // this walks the list and answers ErrNotFound when it is not there.
 func (c *Client) GetLabel(ctx context.Context, labelID int) (*Label, error) {
-	seen := 0
-	for page := 1; ; page++ {
-		resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/labels?pageSize=%d&page=%d", c.OrgID, labelListPageSize, page), nil)
-		if err != nil {
-			return nil, err
+	var found *Label
+	err := c.walkOrgList(ctx, "labels", "", "labels", func(raw json.RawMessage) (bool, error) {
+		var l Label
+		if err := json.Unmarshal(raw, &l); err != nil {
+			return false, fmt.Errorf("failed to parse label: %w", err)
 		}
-		var out struct {
-			Labels     []Label `json:"labels"`
-			Pagination struct {
-				Total int `json:"total"`
-			} `json:"pagination"`
+		if l.LabelID != labelID {
+			return false, nil
 		}
-		if err := json.Unmarshal(resp.Data, &out); err != nil {
-			return nil, fmt.Errorf("failed to parse labels: %w", err)
-		}
-		for i := range out.Labels {
-			if out.Labels[i].LabelID == labelID {
-				return &out.Labels[i], nil
-			}
-		}
-		seen += len(out.Labels)
-		if len(out.Labels) == 0 || seen >= out.Pagination.Total {
-			return nil, fmt.Errorf("label %d: %w", labelID, ErrNotFound)
-		}
+		found = &l
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	if found == nil {
+		return nil, fmt.Errorf("label %d: %w", labelID, ErrNotFound)
+	}
+	return found, nil
 }
 
 // UpdateLabel changes the name and color of a label.
@@ -114,9 +155,10 @@ func (c *Client) DetachLabel(ctx context.Context, labelID int, target LabelTarge
 // LabelAttached says whether the label is on its target. Only the list routes
 // return an item's labels, so this walks the list of the target's kind. A
 // target that is gone counts as not attached. The clients list holds machine
-// clients only, not user devices.
+// clients only, not user devices, and only the active ones unless asked for
+// every status: attaching does not care about a client's status.
 func (c *Client) LabelAttached(ctx context.Context, labelID int, target LabelTarget) (bool, error) {
-	var route, key, idKey string
+	var route, query, key, idKey string
 	var id int
 	switch {
 	case target.SiteID != nil:
@@ -126,55 +168,35 @@ func (c *Client) LabelAttached(ctx context.Context, labelID int, target LabelTar
 	case target.SiteResourceID != nil:
 		route, key, idKey, id = "site-resources", "siteResources", "siteResourceId", *target.SiteResourceID
 	case target.ClientID != nil:
-		route, key, idKey, id = "clients", "clients", "clientId", *target.ClientID
+		route, query, key, idKey, id = "clients", "status=active,blocked,archived", "clients", "clientId", *target.ClientID
 	default:
 		return false, fmt.Errorf("label target names nothing")
 	}
-	seen := 0
-	for page := 1; ; page++ {
-		resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/%s?pageSize=%d&page=%d", c.OrgID, route, labelListPageSize, page), nil)
-		if err != nil {
-			return false, err
-		}
-		var out map[string]json.RawMessage
-		if err := json.Unmarshal(resp.Data, &out); err != nil {
+	attached := false
+	err := c.walkOrgList(ctx, route, query, key, func(raw json.RawMessage) (bool, error) {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &item); err != nil {
 			return false, fmt.Errorf("failed to parse %s: %w", route, err)
 		}
-		var items []map[string]json.RawMessage
-		if raw, ok := out[key]; ok {
-			if err := json.Unmarshal(raw, &items); err != nil {
-				return false, fmt.Errorf("failed to parse %s: %w", route, err)
-			}
+		var itemID int
+		if err := json.Unmarshal(item[idKey], &itemID); err != nil {
+			return false, fmt.Errorf("%s item has no %s: %s", route, idKey, truncateForDiag(raw))
 		}
-		for _, item := range items {
-			var itemID int
-			if err := json.Unmarshal(item[idKey], &itemID); err != nil || itemID != id {
-				continue
-			}
-			var labels []Label
-			if raw, ok := item["labels"]; ok {
-				if err := json.Unmarshal(raw, &labels); err != nil {
-					return false, fmt.Errorf("failed to parse labels of %s %d: %w", route, id, err)
-				}
-			}
-			for _, l := range labels {
-				if l.LabelID == labelID {
-					return true, nil
-				}
-			}
+		if itemID != id {
 			return false, nil
 		}
-		var pagination struct {
-			Total int `json:"total"`
-		}
-		if raw, ok := out["pagination"]; ok {
-			if err := json.Unmarshal(raw, &pagination); err != nil {
-				return false, fmt.Errorf("failed to parse %s pagination: %w", route, err)
+		var labels []Label
+		if rawLabels, ok := item["labels"]; ok {
+			if err := json.Unmarshal(rawLabels, &labels); err != nil {
+				return false, fmt.Errorf("failed to parse labels of %s %d: %w", route, id, err)
 			}
 		}
-		seen += len(items)
-		if len(items) == 0 || seen >= pagination.Total {
-			return false, nil
+		for _, l := range labels {
+			if l.LabelID == labelID {
+				attached = true
+			}
 		}
-	}
+		return true, nil
+	})
+	return attached, err
 }

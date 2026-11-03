@@ -86,3 +86,50 @@ func TestLabelAttached(t *testing.T) {
 		}
 	}
 }
+
+// A blocked or archived client still bears its labels, but the clients list
+// only returns the active ones unless asked otherwise.
+func TestLabelAttached_ClientOfAnyStatus(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org/test-org/clients" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		items := []map[string]any{}
+		if strings.Contains(r.URL.Query().Get("status"), "blocked") {
+			items = append(items, map[string]any{"clientId": 5, "labels": []map[string]any{{"labelId": 4}}})
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"clients": items, "pagination": map[string]any{"total": len(items)}})
+	})
+	id := 5
+	got, err := c.LabelAttached(context.Background(), 4, LabelTarget{ClientID: &id})
+	if err != nil || !got {
+		t.Errorf("LabelAttached = %v, %v, want true", got, err)
+	}
+}
+
+// A response of an unexpected shape must fail the read: a miss removes the
+// object from the state.
+func TestLabelLists_RefuseUnexpectedShape(t *testing.T) {
+	pagination := map[string]any{"total": 1}
+	for name, payload := range map[string]map[string]any{
+		"no list":       {"pagination": pagination},
+		"no pagination": {"labels": []map[string]any{{"labelId": 9}}, "sites": []map[string]any{{"siteId": 2}}},
+		"no item id":    {"labels": []map[string]any{{"labelId": 9}}, "sites": []map[string]any{{"id": 1}}, "pagination": pagination},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				writeEnvelope(t, w, http.StatusOK, payload)
+			})
+			id := 1
+			if _, err := c.LabelAttached(context.Background(), 4, LabelTarget{SiteID: &id}); err == nil {
+				t.Error("LabelAttached: want an error")
+			}
+			if name == "no item id" {
+				return // a label without its ID is just not the one asked for
+			}
+			if _, err := c.GetLabel(context.Background(), 4); err == nil || errors.Is(err, ErrNotFound) {
+				t.Errorf("GetLabel: err = %v, want a non-ErrNotFound error", err)
+			}
+		})
+	}
+}
