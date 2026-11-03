@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
@@ -21,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
@@ -29,7 +31,18 @@ var (
 	_ resource.ResourceWithValidateConfig = &RedirectResource{}
 )
 
-const redirectRewriteStripPrefix = "stripPrefix"
+const (
+	redirectRewriteExact       = "exact"
+	redirectRewriteStripPrefix = "stripPrefix"
+
+	redirectParentChangeDescription = "Pangolin deletes a redirect along with its resource or domain, so moving to another one replaces the redirect: an in-place update would hit a 404 when that parent is itself being replaced."
+)
+
+// redirectDestinationHostRegexp catches at plan time what the server's
+// `value === new URL(value).origin` refuses most often: a path or trailing
+// slash, a query, a fragment, credentials, uppercase, a scheme without an
+// origin. The server stays the judge of the rest, such as a default port.
+var redirectDestinationHostRegexp = regexp.MustCompile(`^(https?|wss?|ftp)://[^A-Z/?#@\s]+$`)
 
 // RedirectResource manages a Pangolin redirect.
 type RedirectResource struct {
@@ -84,14 +97,24 @@ func (r *RedirectResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"resource_id": schema.Int64Attribute{
-				Description: "ID of the public resource the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set.",
+				Description: "ID of the public resource the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set. Moving to another resource forces a replacement.",
 				Optional:    true,
 				Validators:  []validator.Int64{int64validator.AtLeast(1)},
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplaceIf(
+					func(_ context.Context, req planmodifier.Int64Request, resp *int64planmodifier.RequiresReplaceIfFuncResponse) {
+						resp.RequiresReplace = !req.StateValue.IsNull() && !req.PlanValue.IsNull()
+					}, redirectParentChangeDescription, redirectParentChangeDescription,
+				)},
 			},
 			"domain_id": schema.StringAttribute{
-				Description: "ID of the domain the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set.",
+				Description: "ID of the domain the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set. Moving to another domain forces a replacement.",
 				Optional:    true,
 				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(
+					func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+						resp.RequiresReplace = !req.StateValue.IsNull() && !req.PlanValue.IsNull()
+					}, redirectParentChangeDescription, redirectParentChangeDescription,
+				)},
 			},
 			"subdomain": schema.StringAttribute{
 				Description: "Subdomain of `domain_id` the redirect answers on. Unset means the base domain. Only valid with `domain_id`.",
@@ -101,7 +124,9 @@ func (r *RedirectResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"destination_host": schema.StringAttribute{
 				Description: "Destination as `scheme://host[:port]`, with no path, query or fragment. The request path, after any rewrite, is appended to it.",
 				Required:    true,
-				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(redirectDestinationHostRegexp, "must be a lowercase scheme://host[:port] with no path, query or fragment, such as https://example.com"),
+				},
 			},
 			"path_match_type": schema.StringAttribute{
 				Description: "How `match_path` is compared: `exact`, `prefix` or `regex`. Defaults to `regex`.",
@@ -116,14 +141,14 @@ func (r *RedirectResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"rewrite_path": schema.StringAttribute{
-				Description: "Replacement path. Required when `rewrite_path_type` is set, unless it is `stripPrefix`.",
+				Description: "Replacement path. Needs `rewrite_path_type`, and is required with it unless it is `stripPrefix`.",
 				Optional:    true,
 				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"rewrite_path_type": schema.StringAttribute{
-				Description: "How the path is rewritten: `exact`, `prefix`, `regex` or `stripPrefix`. Unset keeps the original path.",
+				Description: "How the path is rewritten: `exact`, `prefix`, `regex` or `stripPrefix`. Unset keeps the original path. Every type but `exact` needs `match_path`.",
 				Optional:    true,
-				Validators:  []validator.String{stringvalidator.OneOf("exact", "prefix", "regex", redirectRewriteStripPrefix)},
+				Validators:  []validator.String{stringvalidator.OneOf(redirectRewriteExact, "prefix", "regex", redirectRewriteStripPrefix)},
 			},
 			"priority": schema.Int64Attribute{
 				Description: "Priority between 1 and 1000. Defaults to `100`, which lets Pangolin order the redirect.",
@@ -166,9 +191,10 @@ func (r *RedirectResource) Configure(_ context.Context, req resource.ConfigureRe
 	r.client = c
 }
 
-// ValidateConfig mirrors the server's checks, and those whose failure the
-// server would only show as a permanent diff (ssl and subdomain on a
-// resource redirect). Unknown values are left to the server.
+// ValidateConfig mirrors the server's checks, those whose failure the server
+// would only show as a permanent diff (ssl and subdomain on a resource
+// redirect), and the rewrites it would store but never apply. Unknown values
+// are left to the server.
 func (r *RedirectResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var cfg RedirectResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
@@ -185,7 +211,7 @@ func validateRedirect(cfg RedirectResourceModel) diag.Diagnostics {
 			"Exactly one of resource_id and domain_id must be set.")
 	}
 	if !cfg.ResourceID.IsNull() && !cfg.ResourceID.IsUnknown() {
-		if !cfg.Subdomain.IsNull() {
+		if !cfg.Subdomain.IsNull() && !cfg.Subdomain.IsUnknown() {
 			diags.AddAttributeError(path.Root("subdomain"), "Unsupported subdomain",
 				"subdomain is only valid with domain_id: a resource_id redirect answers on its resource's domain.")
 		}
@@ -194,17 +220,34 @@ func validateRedirect(cfg RedirectResourceModel) diag.Diagnostics {
 				"ssl cannot be false with resource_id: the redirect follows the ssl setting of its resource.")
 		}
 	}
-	if !cfg.RewritePathType.IsNull() && !cfg.RewritePathType.IsUnknown() &&
-		cfg.RewritePathType.ValueString() != redirectRewriteStripPrefix && cfg.RewritePath.IsNull() {
-		diags.AddAttributeError(path.Root("rewrite_path"), "Missing rewrite_path",
-			fmt.Sprintf("rewrite_path is required unless rewrite_path_type is %q.", redirectRewriteStripPrefix))
+	switch {
+	case cfg.RewritePathType.IsUnknown():
+	case cfg.RewritePathType.IsNull():
+		// The server keeps the request path when the type is null, whatever
+		// rewrite_path says.
+		if !cfg.RewritePath.IsNull() && !cfg.RewritePath.IsUnknown() {
+			diags.AddAttributeError(path.Root("rewrite_path_type"), "Missing rewrite_path_type",
+				"rewrite_path has no effect without rewrite_path_type.")
+		}
+	default:
+		rewriteType := cfg.RewritePathType.ValueString()
+		if rewriteType != redirectRewriteStripPrefix && cfg.RewritePath.IsNull() {
+			diags.AddAttributeError(path.Root("rewrite_path"), "Missing rewrite_path",
+				fmt.Sprintf("rewrite_path is required unless rewrite_path_type is %q.", redirectRewriteStripPrefix))
+		}
+		// Without a matched path the server only honors an exact rewrite.
+		if rewriteType != redirectRewriteExact && cfg.MatchPath.IsNull() {
+			diags.AddAttributeError(path.Root("match_path"), "Missing match_path",
+				fmt.Sprintf("rewrite_path_type %q has no effect without match_path.", rewriteType))
+		}
 	}
 	return diags
 }
 
 func redirectRequest(m RedirectResourceModel) *client.RedirectRequest {
-	req := &client.RedirectRequest{
+	return &client.RedirectRequest{
 		Name:            m.Name.ValueString(),
+		ResourceID:      int64PtrToIntPtr(m.ResourceID),
 		DomainID:        m.DomainID.ValueStringPointer(),
 		Subdomain:       m.Subdomain.ValueStringPointer(),
 		DestinationHost: m.DestinationHost.ValueString(),
@@ -217,11 +260,6 @@ func redirectRequest(m RedirectResourceModel) *client.RedirectRequest {
 		SSL:             m.SSL.ValueBool(),
 		Enabled:         m.Enabled.ValueBool(),
 	}
-	if !m.ResourceID.IsNull() {
-		id := int(m.ResourceID.ValueInt64())
-		req.ResourceID = &id
-	}
-	return req
 }
 
 func redirectToModel(in *client.Redirect) RedirectResourceModel {
@@ -229,21 +267,18 @@ func redirectToModel(in *client.Redirect) RedirectResourceModel {
 		ID:              types.Int64Value(int64(in.RedirectID)),
 		NiceID:          types.StringValue(in.NiceID),
 		Name:            types.StringValue(in.Name),
-		ResourceID:      types.Int64Null(),
-		DomainID:        types.StringPointerValue(in.DomainID),
-		Subdomain:       types.StringPointerValue(in.Subdomain),
+		ResourceID:      tfconv.Int64FromIntPtr(in.ResourceID),
+		DomainID:        tfconv.StringFromPtr(in.DomainID),
+		Subdomain:       tfconv.StringFromPtr(in.Subdomain),
 		DestinationHost: types.StringValue(in.DestinationHost),
 		PathMatchType:   types.StringValue(in.PathMatchType),
-		MatchPath:       types.StringPointerValue(in.MatchPath),
-		RewritePath:     types.StringPointerValue(in.RewritePath),
-		RewritePathType: types.StringPointerValue(in.RewritePathType),
+		MatchPath:       tfconv.StringFromPtr(in.MatchPath),
+		RewritePath:     tfconv.StringFromPtr(in.RewritePath),
+		RewritePathType: tfconv.StringFromPtr(in.RewritePathType),
 		Priority:        types.Int64Value(100),
 		Permanent:       types.BoolValue(in.Permanent),
 		SSL:             types.BoolValue(in.SSL),
 		Enabled:         types.BoolValue(in.Enabled),
-	}
-	if in.ResourceID != nil {
-		m.ResourceID = types.Int64Value(int64(*in.ResourceID))
 	}
 	if in.Priority != nil {
 		m.Priority = types.Int64Value(int64(*in.Priority))

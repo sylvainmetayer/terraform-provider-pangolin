@@ -52,6 +52,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_role` | Role |
 | `pangolin_user` | User |
 | `pangolin_domain` | Domain of the organization (wildcard, NS or CNAME) with the DNS records to create |
+| `pangolin_redirect` | Redirect attached to a public resource or to a domain |
 | `pangolin_api_key` | API key |
 | `pangolin_api_key_actions` | Set of actions (permissions) granted to an API key |
 | `pangolin_client` | OLM client device |

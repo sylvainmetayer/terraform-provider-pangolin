@@ -43,15 +43,15 @@ resource "pangolin_redirect" "docs" {
 
 ### Optional
 
-- `domain_id` (String) ID of the domain the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set.
+- `domain_id` (String) ID of the domain the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set. Moving to another domain forces a replacement.
 - `enabled` (Boolean) Whether the redirect is enabled. Defaults to `true`.
 - `match_path` (String) Path the redirect applies to. Unset means every path.
 - `path_match_type` (String) How `match_path` is compared: `exact`, `prefix` or `regex`. Defaults to `regex`.
 - `permanent` (Boolean) Send a permanent redirect instead of a temporary one. Defaults to `false`.
 - `priority` (Number) Priority between 1 and 1000. Defaults to `100`, which lets Pangolin order the redirect.
-- `resource_id` (Number) ID of the public resource the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set.
-- `rewrite_path` (String) Replacement path. Required when `rewrite_path_type` is set, unless it is `stripPrefix`.
-- `rewrite_path_type` (String) How the path is rewritten: `exact`, `prefix`, `regex` or `stripPrefix`. Unset keeps the original path.
+- `resource_id` (Number) ID of the public resource the redirect is attached to. Exactly one of `resource_id` and `domain_id` must be set. Moving to another resource forces a replacement.
+- `rewrite_path` (String) Replacement path. Needs `rewrite_path_type`, and is required with it unless it is `stripPrefix`.
+- `rewrite_path_type` (String) How the path is rewritten: `exact`, `prefix`, `regex` or `stripPrefix`. Unset keeps the original path. Every type but `exact` needs `match_path`.
 - `ssl` (Boolean) Serve the redirect over TLS. Defaults to `true`. Only `domain_id` redirects can turn it off: a `resource_id` redirect follows its resource.
 - `subdomain` (String) Subdomain of `domain_id` the redirect answers on. Unset means the base domain. Only valid with `domain_id`.
 
