@@ -198,6 +198,8 @@ func (p *PangolinProvider) Resources(_ context.Context) []func() resource.Resour
 		resources.NewAPIKeyActionsResource,
 		resources.NewOrgIDPResource,
 		resources.NewDomainResource,
+		resources.NewLabelResource,
+		resources.NewLabelAttachmentResource,
 		resources.NewAlertRuleResource,
 		resources.NewResourcePolicyResource,
 		resources.NewResourcePolicyPasswordResource,
