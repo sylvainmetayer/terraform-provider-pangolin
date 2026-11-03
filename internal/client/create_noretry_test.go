@@ -33,6 +33,7 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateIDP", func(c *Client) error { _, err := c.CreateIDP(ctx, &CreateIDPRequest{}); return err }},
 		{"CreateOrgIDP", func(c *Client) error { _, err := c.CreateOrgIDP(ctx, "org", &CreateIDPRequest{}); return err }},
 		{"CreateDomain", func(c *Client) error { _, err := c.CreateDomain(ctx, "org", &CreateDomainRequest{}); return err }},
+		{"CreateRedirect", func(c *Client) error { _, err := c.CreateRedirect(ctx, &RedirectRequest{}); return err }},
 		{"CreateResourceRule", func(c *Client) error {
 			_, err := c.CreateResourceRule(ctx, 1, &SetResourceRuleRequest{})
 			return err
