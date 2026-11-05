@@ -330,9 +330,10 @@ func TestGetSiteResource_NotInListReturnsErrNotFound(t *testing.T) {
 	// client lists and filters. An empty list must surface as ErrNotFound so
 	// callers (and Read methods) can drop state instead of erroring.
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		writeEnvelope(t, w, http.StatusOK, struct {
-			SiteResources []SiteResource `json:"siteResources"`
-		}{SiteResources: []SiteResource{{SiteResourceID: 1}, {SiteResourceID: 2}}})
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"siteResources": []SiteResource{{SiteResourceID: 1}, {SiteResourceID: 2}},
+			"pagination":    map[string]any{"total": 2},
+		})
 	})
 
 	_, err := c.GetSiteResource(context.Background(), 999)
@@ -401,12 +402,13 @@ func TestNewClient_WithInsecureTLS(t *testing.T) {
 
 func TestGetSiteResource_ListHit(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		writeEnvelope(t, w, http.StatusOK, struct {
-			SiteResources []SiteResource `json:"siteResources"`
-		}{SiteResources: []SiteResource{
-			{SiteResourceID: 1, Name: "a"},
-			{SiteResourceID: 2, Name: "b"},
-		}})
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"siteResources": []SiteResource{
+				{SiteResourceID: 1, Name: "a"},
+				{SiteResourceID: 2, Name: "b"},
+			},
+			"pagination": map[string]any{"total": 2},
+		})
 	})
 
 	got, err := c.GetSiteResource(context.Background(), 2)
@@ -451,7 +453,7 @@ func TestSiteResource_DecodesListWireShape(t *testing.T) {
 		"siteIds": [5],
 		"siteAddresses": ["100.90.128.1/24"],
 		"siteOnlines": [true]
-	}]}`
+	}],"pagination":{"total":1}}`
 
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -575,7 +577,7 @@ func TestSiteResource_NullableScalarsPopulated(t *testing.T) {
 		"networkId": 1,
 		"defaultNetworkId": 1,
 		"siteIds": [7]
-	}]}`
+	}],"pagination":{"total":1}}`
 
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1200,6 +1202,7 @@ func TestUserHasRole_HitAndMiss(t *testing.T) {
 					"roles": []map[string]any{{"roleId": 2, "roleName": "Member"}},
 				},
 			},
+			"pagination": map[string]any{"total": 2},
 		})
 	})
 
@@ -1778,6 +1781,7 @@ func TestListUsers_ExtendedFields(t *testing.T) {
 					},
 				},
 			},
+			"pagination": map[string]any{"total": 1},
 		})
 	})
 
@@ -2606,6 +2610,7 @@ func TestGetRoleByID_FallbackViaList(t *testing.T) {
 						"sshUnixGroups":         "[]",
 					},
 				},
+				"pagination": map[string]any{"total": 2},
 			})
 			return
 		}

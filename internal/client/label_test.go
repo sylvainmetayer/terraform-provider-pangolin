@@ -133,3 +133,51 @@ func TestLabelLists_RefuseUnexpectedShape(t *testing.T) {
 		})
 	}
 }
+
+// A resource past the API's default page of 20 must not read as gone: its PIN,
+// password or header auth would drop from the state and be recreated.
+func TestGetResourceAuthState_WalksPages(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org/test-org/resources" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		resources := []map[string]any{{"resourceId": 1}}
+		if r.URL.Query().Get("page") == "2" {
+			resources = []map[string]any{{"resourceId": 2, "pincodeId": 7}}
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resources":  resources,
+			"pagination": map[string]any{"total": 2},
+		})
+	})
+	got, err := c.GetResourceAuthState(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("GetResourceAuthState: %v", err)
+	}
+	if got.PincodeID == nil || *got.PincodeID != 7 {
+		t.Errorf("got %+v, want pincodeId 7", got)
+	}
+	if _, err := c.GetResourceAuthState(context.Background(), 9); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListRoles_WalksPages(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		roleID := 1
+		if r.URL.Query().Get("page") == "2" {
+			roleID = 2
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"roles":      []map[string]any{{"roleId": roleID}},
+			"pagination": map[string]any{"total": 2},
+		})
+	})
+	roles, err := c.ListRoles(context.Background())
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if len(roles) != 2 || roles[1].RoleID != 2 {
+		t.Errorf("got %+v", roles)
+	}
+}

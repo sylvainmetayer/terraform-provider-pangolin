@@ -101,6 +101,20 @@ func (c *Client) walkOrgList(ctx context.Context, route, query, key string, visi
 	}
 }
 
+// listOrg returns every item of the paginated list /org/{org}/{route}.
+func listOrg[T any](ctx context.Context, c *Client, route, key string) ([]T, error) {
+	items := []T{}
+	err := c.walkOrgList(ctx, route, "", key, func(raw json.RawMessage) (bool, error) {
+		var item T
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return false, fmt.Errorf("failed to parse %s: %w", route, err)
+		}
+		items = append(items, item)
+		return false, nil
+	})
+	return items, err
+}
+
 // GetLabel finds a label by ID. The API has no route for a single label, so
 // this walks the list and answers ErrNotFound when it is not there.
 func (c *Client) GetLabel(ctx context.Context, labelID int) (*Label, error) {
