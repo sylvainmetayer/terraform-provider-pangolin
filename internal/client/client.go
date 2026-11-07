@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,12 @@ type Client struct {
 	// a site resource update without the grant lists, so later updates
 	// send them directly instead of failing first.
 	legacySiteResourceGrants atomic.Bool
+
+	// AddressMu serializes picking a site or client address and creating
+	// the object with it: pick-site-defaults and pick-client-defaults hand
+	// out the same free address until it is used, so parallel creates
+	// collide with a 409 "Subnet ... already exists".
+	AddressMu sync.Mutex
 }
 
 // APIResponse is the standard Pangolin API response wrapper.
