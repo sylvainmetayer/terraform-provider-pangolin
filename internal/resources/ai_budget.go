@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -18,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
@@ -108,6 +111,7 @@ func (r *AIBudgetResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"amount": schema.Float64Attribute{
 				Description: "The cap, in `unit`. Must be greater than zero.",
 				Required:    true,
+				Validators:  []validator.Float64{float64validator.AtLeast(math.SmallestNonzeroFloat64)},
 			},
 			"unit": schema.StringAttribute{
 				Description: "`usd` or `tokens`.",
@@ -150,28 +154,13 @@ func (r *AIBudgetResource) Configure(_ context.Context, req resource.ConfigureRe
 	r.client = c
 }
 
-func budgetIntPtr(v types.Int64) *int {
-	if v.IsNull() || v.IsUnknown() {
-		return nil
-	}
-	i := int(v.ValueInt64())
-	return &i
-}
-
-func budgetIntValue(v *int) types.Int64 {
-	if v == nil {
-		return types.Int64Null()
-	}
-	return types.Int64Value(int64(*v))
-}
-
 func aiBudgetCreateRequest(m AIBudgetResourceModel) *client.AIBudgetRequest {
 	return &client.AIBudgetRequest{
-		ProviderID:      budgetIntPtr(m.ProviderID),
-		ModelID:         budgetIntPtr(m.ModelID),
-		ResourceID:      budgetIntPtr(m.ResourceID),
-		SiteResourceID:  budgetIntPtr(m.SiteResourceID),
-		RoleID:          budgetIntPtr(m.RoleID),
+		ProviderID:      int64PtrToIntPtr(m.ProviderID),
+		ModelID:         int64PtrToIntPtr(m.ModelID),
+		ResourceID:      int64PtrToIntPtr(m.ResourceID),
+		SiteResourceID:  int64PtrToIntPtr(m.SiteResourceID),
+		RoleID:          int64PtrToIntPtr(m.RoleID),
 		VirtualAPIKeyID: m.VirtualAPIKeyID.ValueStringPointer(),
 		Amount:          m.Amount.ValueFloat64(),
 		Unit:            m.Unit.ValueString(),
@@ -181,30 +170,22 @@ func aiBudgetCreateRequest(m AIBudgetResourceModel) *client.AIBudgetRequest {
 	}
 }
 
+// aiBudgetUpdateRequest has the create fields; only the JSON tags differ (the
+// scopes are always sent on update, null clears one), and Go ignores tags in
+// struct conversions.
 func aiBudgetUpdateRequest(m AIBudgetResourceModel) *client.AIBudgetUpdateRequest {
-	return &client.AIBudgetUpdateRequest{
-		ProviderID:      budgetIntPtr(m.ProviderID),
-		ModelID:         budgetIntPtr(m.ModelID),
-		ResourceID:      budgetIntPtr(m.ResourceID),
-		SiteResourceID:  budgetIntPtr(m.SiteResourceID),
-		RoleID:          budgetIntPtr(m.RoleID),
-		VirtualAPIKeyID: m.VirtualAPIKeyID.ValueStringPointer(),
-		Amount:          m.Amount.ValueFloat64(),
-		Unit:            m.Unit.ValueString(),
-		Period:          m.Period.ValueString(),
-		Enforcement:     m.Enforcement.ValueString(),
-		Enabled:         m.Enabled.ValueBoolPointer(),
-	}
+	u := client.AIBudgetUpdateRequest(*aiBudgetCreateRequest(m))
+	return &u
 }
 
 func aiBudgetToModel(b *client.AIBudget) AIBudgetResourceModel {
 	return AIBudgetResourceModel{
 		ID:              types.Int64Value(int64(b.BudgetID)),
-		ProviderID:      budgetIntValue(b.ProviderID),
-		ModelID:         budgetIntValue(b.ModelID),
-		ResourceID:      budgetIntValue(b.ResourceID),
-		SiteResourceID:  budgetIntValue(b.SiteResourceID),
-		RoleID:          budgetIntValue(b.RoleID),
+		ProviderID:      tfconv.Int64FromIntPtr(b.ProviderID),
+		ModelID:         tfconv.Int64FromIntPtr(b.ModelID),
+		ResourceID:      tfconv.Int64FromIntPtr(b.ResourceID),
+		SiteResourceID:  tfconv.Int64FromIntPtr(b.SiteResourceID),
+		RoleID:          tfconv.Int64FromIntPtr(b.RoleID),
 		VirtualAPIKeyID: types.StringPointerValue(b.VirtualAPIKeyID),
 		Amount:          types.Float64Value(b.Amount),
 		Unit:            types.StringValue(b.Unit),
