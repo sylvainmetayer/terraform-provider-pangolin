@@ -77,19 +77,24 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"email": schema.StringAttribute{
-				Description: "The user email address.",
+				Description: "The user email address. The server cannot change it: a new value replaces the user.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					// The server lowercases the email: a case change is not a new address.
+					stringplanmodifier.RequiresReplaceIf(func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+						resp.RequiresReplace = !strings.EqualFold(req.StateValue.ValueString(), req.PlanValue.ValueString())
+					}, "Replaces the user when the email changes other than by case.", "Replaces the user when the email changes other than by case."),
 				},
 			},
 			"name": schema.StringAttribute{
-				Description: "The display name of the user.",
+				Description: "The display name of the user. The server cannot change it: a new value replaces the user.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"type": schema.StringAttribute{
