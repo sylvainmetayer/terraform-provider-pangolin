@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -69,6 +70,17 @@ func (jsonObjectValidator) ValidateString(_ context.Context, req validator.Strin
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid JSON object",
 			"The value must be a JSON object, for example built with jsonencode({...}).")
 	}
+}
+
+// jsonEqual reports whether a and b are the same JSON document, so a server
+// that re-serializes the config (key order, spacing) does not cause an
+// inconsistent-result error or a perpetual diff.
+func jsonEqual(a, b string) bool {
+	var x, y any
+	if json.Unmarshal([]byte(a), &x) != nil || json.Unmarshal([]byte(b), &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 func logFlag(desc string) schema.BoolAttribute {
@@ -156,7 +168,7 @@ func eventStreamingRequest(m EventStreamingDestinationResourceModel) *client.Eve
 // server could not decrypt it: the prior value is kept.
 func eventStreamingToModel(prior types.String, in *client.EventStreamingDestination) EventStreamingDestinationResourceModel {
 	cfg := prior
-	if in.Config != "" {
+	if in.Config != "" && !jsonEqual(prior.ValueString(), in.Config) {
 		cfg = types.StringValue(in.Config)
 	}
 	return EventStreamingDestinationResourceModel{

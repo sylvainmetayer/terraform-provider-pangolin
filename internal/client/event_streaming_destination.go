@@ -62,13 +62,16 @@ func (c *Client) CreateEventStreamingDestination(ctx context.Context, req *Event
 // default). The config comes back decrypted.
 func (c *Client) GetEventStreamingDestination(ctx context.Context, id int) (*EventStreamingDestination, error) {
 	const limit = 1000
-	for offset := 0; ; offset += limit {
+	for offset := 0; ; {
 		resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/event-streaming-destinations?limit=%d&offset=%d", c.OrgID, limit, offset), nil)
 		if err != nil {
 			return nil, err
 		}
 		var out struct {
 			Destinations []EventStreamingDestination `json:"destinations"`
+			Pagination   struct {
+				Total int `json:"total"`
+			} `json:"pagination"`
 		}
 		if err := json.Unmarshal(resp.Data, &out); err != nil {
 			return nil, fmt.Errorf("failed to parse event streaming destinations: %w", err)
@@ -78,7 +81,12 @@ func (c *Client) GetEventStreamingDestination(ctx context.Context, id int) (*Eve
 				return &out.Destinations[i], nil
 			}
 		}
-		if len(out.Destinations) < limit {
+		// Advance by what came back, not by limit: the server may cap the page size.
+		// Without a total, a short page is the only end marker.
+		offset += len(out.Destinations)
+		if len(out.Destinations) == 0 ||
+			(out.Pagination.Total > 0 && offset >= out.Pagination.Total) ||
+			(out.Pagination.Total == 0 && len(out.Destinations) < limit) {
 			return nil, ErrNotFound
 		}
 	}
