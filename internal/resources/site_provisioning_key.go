@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -23,6 +22,7 @@ import (
 var (
 	_ resource.Resource                = &SiteProvisioningKeyResource{}
 	_ resource.ResourceWithImportState = &SiteProvisioningKeyResource{}
+	_ resource.ResourceWithModifyPlan  = &SiteProvisioningKeyResource{}
 )
 
 // SiteProvisioningKeyResource manages a site provisioning key.
@@ -117,14 +117,12 @@ func (r *SiteProvisioningKeyResource) Schema(_ context.Context, _ resource.Schem
 				Default:  booldefault.StaticBool(true),
 			},
 			"num_used": schema.Int64Attribute{
-				Description:   "How many sites the key has created.",
-				Computed:      true,
-				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+				Description: "How many sites the key has created.",
+				Computed:    true,
 			},
 			"last_used": schema.StringAttribute{
-				Description:   "When the key was last used, null if never.",
-				Computed:      true,
-				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				Description: "When the key was last used, null if never.",
+				Computed:    true,
 			},
 			"created_at": schema.StringAttribute{
 				Description:   "When the key was created.",
@@ -132,6 +130,28 @@ func (r *SiteProvisioningKeyResource) Schema(_ context.Context, _ resource.Schem
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
+	}
+}
+
+// ModifyPlan plans no update when no setting changes. The framework marks
+// num_used and last_used unknown as soon as the raw config differs from
+// state, which a timestamp written differently (sameInstantModifier) does
+// after an import.
+func (r *SiteProvisioningKeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state SiteProvisioningKeyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.Name.Equal(state.Name) && plan.MaxBatchSize.Equal(state.MaxBatchSize) &&
+		plan.ValidUntil.Equal(state.ValidUntil) && plan.ApproveNewSites.Equal(state.ApproveNewSites) {
+		plan.NumUsed = state.NumUsed
+		plan.LastUsed = state.LastUsed
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
 }
 
