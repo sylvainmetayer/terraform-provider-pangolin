@@ -102,15 +102,15 @@ resource "pangolin_resource" "postgres" {
 }
 
 # ---------------------------------------------------------------------
-# AI gateway endpoint (Pangolin >= 1.22). The AI providers are created
-# in Pangolin; their IDs are attached here in inherit mode.
+# AI gateway endpoint (Pangolin >= 1.22). The AI providers
+# (pangolin_ai_provider) are attached in inherit mode.
 # ---------------------------------------------------------------------
 resource "pangolin_resource" "llm" {
   name            = "llm-gateway"
   mode            = "inference"
   subdomain       = "llm"
   domain_id       = data.pangolin_domains.all.domains[0].domain_id
-  ai_provider_ids = [1, 2]
+  ai_provider_ids = [pangolin_ai_provider.openai.id]
 }
 
 # ---------------------------------------------------------------------
