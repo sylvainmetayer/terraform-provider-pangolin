@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
@@ -65,12 +66,12 @@ func (r *CustomDNSRecordResource) Metadata(_ context.Context, req resource.Metad
 // relative name, TXT quotes stripped). Configs must already be in that
 // form, so what is written is what is stored.
 var (
-	dnsLabel          = `[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?`
-	customDNSNameRe   = regexp.MustCompile(`^(@|\*|(\*\.)?` + dnsLabel + `(\.` + dnsLabel + `)*)$`)
-	customDNSHostRe   = regexp.MustCompile(`^` + dnsLabel + `(\.` + dnsLabel + `)+$`)
-	customDNSTXTRe    = regexp.MustCompile(`^[\x20-\x7e]+$`)
-	customDNSTypes    = []string{"A", "AAAA", "CNAME", "MX", "NS", "SRV", "TXT"}
-	customDNSPortSpec = []validator.Int64{int64validator.Between(0, 65535)}
+	dnsLabel                  = `[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?`
+	customDNSNameRe           = regexp.MustCompile(`^(@|\*|(\*\.)?` + dnsLabel + `(\.` + dnsLabel + `)*)$`)
+	customDNSHostRe           = regexp.MustCompile(`^` + dnsLabel + `(\.` + dnsLabel + `)+$`)
+	customDNSTXTRe            = regexp.MustCompile(`^[\x20-\x7e]+$`)
+	customDNSTypes            = []string{"A", "AAAA", "CNAME", "MX", "NS", "SRV", "TXT"}
+	customDNSUint16Validators = []validator.Int64{int64validator.Between(0, 65535)}
 )
 
 func (r *CustomDNSRecordResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -129,17 +130,17 @@ func (r *CustomDNSRecordResource) Schema(_ context.Context, _ resource.SchemaReq
 			"priority": schema.Int64Attribute{
 				Description: "Priority, required for `MX` and `SRV` and not allowed for other types.",
 				Optional:    true,
-				Validators:  customDNSPortSpec,
+				Validators:  customDNSUint16Validators,
 			},
 			"weight": schema.Int64Attribute{
 				Description: "Weight, required for `SRV` and not allowed for other types.",
 				Optional:    true,
-				Validators:  customDNSPortSpec,
+				Validators:  customDNSUint16Validators,
 			},
 			"port": schema.Int64Attribute{
 				Description: "Port, required for `SRV` and not allowed for other types.",
 				Optional:    true,
-				Validators:  customDNSPortSpec,
+				Validators:  customDNSUint16Validators,
 			},
 			"enabled": schema.BoolAttribute{
 				Description: "Whether the record is served. Defaults to `true`.",
@@ -239,7 +240,7 @@ func validateCustomDNSRecord(ctx context.Context, m CustomDNSRecordResourceModel
 		switch {
 		case needed && f.v.IsNull():
 			diags.AddAttributeError(path.Root(f.name), "Missing "+f.name, fmt.Sprintf("%s records require %s.", t, f.name))
-		case !needed && !f.v.IsNull():
+		case !needed && !f.v.IsNull() && !f.v.IsUnknown():
 			diags.AddAttributeError(path.Root(f.name), "Unexpected "+f.name, fmt.Sprintf("%s is only used by %s records.", f.name, strings.Join(f.types, " and ")))
 		}
 	}
@@ -314,11 +315,13 @@ func customDNSRecordToModel(ctx context.Context, rec *client.CustomDNSRecord) (C
 	}, diags
 }
 
-func (r *CustomDNSRecordResource) write(ctx context.Context, plan CustomDNSRecordResourceModel, id int, diags *diag.Diagnostics, state interface {
-	Set(context.Context, interface{}) diag.Diagnostics
-}) {
-	if diags.Append(r.checkRelativeName(ctx, plan)...); diags.HasError() {
-		return
+// write creates (id 0) or updates the record. The name check reads the
+// domain, so it only runs when the name is new.
+func (r *CustomDNSRecordResource) write(ctx context.Context, plan CustomDNSRecordResourceModel, id int, nameChanged bool, diags *diag.Diagnostics, state *tfsdk.State) {
+	if nameChanged {
+		if diags.Append(r.checkRelativeName(ctx, plan)...); diags.HasError() {
+			return
+		}
 	}
 	body, d := customDNSRecordRequest(ctx, plan)
 	if diags.Append(d...); diags.HasError() {
@@ -347,7 +350,7 @@ func (r *CustomDNSRecordResource) Create(ctx context.Context, req resource.Creat
 	if resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...); resp.Diagnostics.HasError() {
 		return
 	}
-	r.write(ctx, plan, 0, &resp.Diagnostics, &resp.State)
+	r.write(ctx, plan, 0, true, &resp.Diagnostics, &resp.State)
 }
 
 func (r *CustomDNSRecordResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -378,7 +381,7 @@ func (r *CustomDNSRecordResource) Update(ctx context.Context, req resource.Updat
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	r.write(ctx, plan, int(state.ID.ValueInt64()), &resp.Diagnostics, &resp.State)
+	r.write(ctx, plan, int(state.ID.ValueInt64()), !plan.Name.Equal(state.Name), &resp.Diagnostics, &resp.State)
 }
 
 func (r *CustomDNSRecordResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
