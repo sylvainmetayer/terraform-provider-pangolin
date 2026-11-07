@@ -75,6 +75,7 @@ type ResourcePolicy struct {
 	SSO                   bool                           `json:"sso"`
 	ApplyRules            bool                           `json:"applyRules"`
 	EmailWhitelistEnabled bool                           `json:"emailWhitelistEnabled"`
+	MTLSEnabled           bool                           `json:"mtlsEnabled"`
 	IDPID                 *int                           `json:"idpId"`
 	PasswordID            *int                           `json:"passwordId"`
 	PincodeID             *int                           `json:"pincodeId"`

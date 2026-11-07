@@ -613,8 +613,10 @@ type Resource struct {
 	Protocol     string `json:"protocol,omitempty"`
 	Wildcard     bool   `json:"wildcard,omitempty"`
 	// MatchBaseDomain is absent before Pangolin 1.26.0.
-	MatchBaseDomain *bool  `json:"matchBaseDomain"`
-	Health          string `json:"health,omitempty"`
+	MatchBaseDomain *bool `json:"matchBaseDomain"`
+	// MTLSEnabled is absent before Pangolin 1.25.3.
+	MTLSEnabled *bool  `json:"mtlsEnabled"`
+	Health      string `json:"health,omitempty"`
 
 	// Mode / L7 vs L4 (1.19)
 	Mode           string `json:"mode,omitempty"`
