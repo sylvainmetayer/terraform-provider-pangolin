@@ -43,6 +43,7 @@ type SiteResourceModel struct {
 	DockerSocketEnabled types.Bool   `tfsdk:"docker_socket_enabled"`
 	NewtAutoUpdate      types.Bool   `tfsdk:"newt_auto_update"`
 	RotationTrigger     types.String `tfsdk:"rotation_trigger"`
+	RotationDisconnect  types.Bool   `tfsdk:"rotation_disconnect"`
 }
 
 // NewSiteResource returns a new resource factory.
@@ -112,7 +113,8 @@ func (r *SiteResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"rotation_trigger": rotationTriggerAttribute("newt_secret", "Newt"),
+			"rotation_trigger":    rotationTriggerAttribute("newt_secret", "Newt"),
+			"rotation_disconnect": rotationDisconnectAttribute("Newt"),
 			"docker_socket_enabled": schema.BoolAttribute{
 				Description: "Enable Docker socket access on this site. Defaults to `true` to match the Pangolin API default.",
 				Optional:    true,
@@ -242,6 +244,7 @@ func (r *SiteResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	state.Address = types.StringValue(site.Address)
 	state.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
 	state.NewtAutoUpdate = siteNewtAutoUpdate(site)
+	state.RotationDisconnect = rotationDisconnectOrDefault(state.RotationDisconnect)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -286,7 +289,7 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			failedRotation("Failed to generate a new site secret", err)
 			return
 		}
-		if err := r.client.ReKeySite(ctx, int(plan.ID.ValueInt64()), defaults.NewtSecret); err != nil {
+		if err := r.client.ReKeySite(ctx, int(plan.ID.ValueInt64()), defaults.NewtSecret, plan.RotationDisconnect.ValueBool()); err != nil {
 			failedRotation("Failed to rotate site secret", err)
 			return
 		}
@@ -334,6 +337,7 @@ func (r *SiteResource) ImportState(ctx context.Context, req resource.ImportState
 		NewtSecret:          types.StringNull(),
 		DockerSocketEnabled: types.BoolValue(site.DockerSocketEnabled),
 		NewtAutoUpdate:      siteNewtAutoUpdate(site),
+		RotationDisconnect:  types.BoolValue(true),
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)

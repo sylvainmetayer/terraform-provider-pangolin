@@ -32,15 +32,16 @@ type OLMClientResource struct {
 
 // OLMClientResourceModel describes the resource data model.
 type OLMClientResourceModel struct {
-	ID              types.Int64  `tfsdk:"id"`
-	NiceID          types.String `tfsdk:"nice_id"`
-	OlmID           types.String `tfsdk:"olm_id"`
-	Name            types.String `tfsdk:"name"`
-	Online          types.Bool   `tfsdk:"online"`
-	Archived        types.Bool   `tfsdk:"archived"`
-	Blocked         types.Bool   `tfsdk:"blocked"`
-	Secret          types.String `tfsdk:"secret"`
-	RotationTrigger types.String `tfsdk:"rotation_trigger"`
+	ID                 types.Int64  `tfsdk:"id"`
+	NiceID             types.String `tfsdk:"nice_id"`
+	OlmID              types.String `tfsdk:"olm_id"`
+	Name               types.String `tfsdk:"name"`
+	Online             types.Bool   `tfsdk:"online"`
+	Archived           types.Bool   `tfsdk:"archived"`
+	Blocked            types.Bool   `tfsdk:"blocked"`
+	Secret             types.String `tfsdk:"secret"`
+	RotationTrigger    types.String `tfsdk:"rotation_trigger"`
+	RotationDisconnect types.Bool   `tfsdk:"rotation_disconnect"`
 }
 
 // NewOLMClientResource returns a new resource factory.
@@ -103,7 +104,8 @@ func (r *OLMClientResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
 			},
-			"rotation_trigger": rotationTriggerAttribute("secret", "OLM"),
+			"rotation_trigger":    rotationTriggerAttribute("secret", "OLM"),
+			"rotation_disconnect": rotationDisconnectAttribute("OLM"),
 			"secret": schema.StringAttribute{
 				Description: "The client secret. Only available at creation time; stored in state.",
 				Computed:    true,
@@ -201,6 +203,7 @@ func (r *OLMClientResource) Read(ctx context.Context, req resource.ReadRequest, 
 	state.Archived = types.BoolValue(olmClient.Archived)
 	state.Blocked = types.BoolValue(olmClient.Blocked)
 	state.OlmID = types.StringValue(olmClient.OlmID)
+	state.RotationDisconnect = rotationDisconnectOrDefault(state.RotationDisconnect)
 	// Secret is not returned by Get; preserve existing state value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -254,7 +257,7 @@ func (r *OLMClientResource) Update(ctx context.Context, req resource.UpdateReque
 			failedRotation("Failed to generate a new client secret", err)
 			return
 		}
-		if err := r.client.ReKeyClient(ctx, int(plan.ID.ValueInt64()), defaults.OlmSecret); err != nil {
+		if err := r.client.ReKeyClient(ctx, int(plan.ID.ValueInt64()), defaults.OlmSecret, plan.RotationDisconnect.ValueBool()); err != nil {
 			failedRotation("Failed to rotate client secret", err)
 			return
 		}
@@ -322,13 +325,14 @@ func (r *OLMClientResource) ImportState(ctx context.Context, req resource.Import
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &OLMClientResourceModel{
-		ID:       types.Int64Value(int64(olmClient.ClientID)),
-		NiceID:   types.StringValue(olmClient.NiceID),
-		OlmID:    types.StringValue(olmClient.OlmID),
-		Name:     types.StringValue(olmClient.Name),
-		Online:   types.BoolValue(olmClient.Online),
-		Archived: types.BoolValue(olmClient.Archived),
-		Blocked:  types.BoolValue(olmClient.Blocked),
-		Secret:   types.StringValue(""), // Secret cannot be recovered after creation.
+		ID:                 types.Int64Value(int64(olmClient.ClientID)),
+		NiceID:             types.StringValue(olmClient.NiceID),
+		OlmID:              types.StringValue(olmClient.OlmID),
+		Name:               types.StringValue(olmClient.Name),
+		Online:             types.BoolValue(olmClient.Online),
+		Archived:           types.BoolValue(olmClient.Archived),
+		Blocked:            types.BoolValue(olmClient.Blocked),
+		Secret:             types.StringValue(""), // Secret cannot be recovered after creation.
+		RotationDisconnect: types.BoolValue(true),
 	})...)
 }

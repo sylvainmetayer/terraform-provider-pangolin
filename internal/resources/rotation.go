@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -15,11 +16,30 @@ func rotationTriggerAttribute(secretAttr, what string) schema.StringAttribute {
 	return schema.StringAttribute{
 		Description: "Arbitrary value that triggers a rotation of `" + secretAttr + "` whenever it changes (for example `\"2026-11\"`). " +
 			"On change, a new " + what + " secret is generated and `" + secretAttr + "` is updated in state. " +
-			"The new secret takes effect immediately: Pangolin disconnects the running tunnel and the old secret is rejected, " +
-			"so the connector stays down until it is restarted with the new secret. " +
+			"By default the new secret takes effect immediately: Pangolin disconnects the running tunnel and the old secret is rejected, " +
+			"so the connector stays down until it is restarted with the new secret (see `rotation_disconnect`). " +
 			"Changing it from unset to a value also rotates; removing it does not. Not read back from the API, so it is unset after `terraform import`.",
 		Optional: true,
 	}
+}
+
+func rotationDisconnectAttribute(what string) schema.BoolAttribute {
+	return schema.BoolAttribute{
+		Description: "Whether a rotation disconnects the running " + what + " (default `true`). With `false` the tunnel stays up on its current session, " +
+			"and the old secret is only refused at the next reconnect: restart the connector with the new secret soon, since any reconnect (network loss, restart) before that fails.",
+		Optional: true,
+		Computed: true,
+		Default:  booldefault.StaticBool(true),
+	}
+}
+
+// rotationDisconnectOrDefault fills a state written before the attribute
+// existed, so the default does not show as a change in every plan.
+func rotationDisconnectOrDefault(v types.Bool) types.Bool {
+	if v.IsNull() || v.IsUnknown() {
+		return types.BoolValue(true)
+	}
+	return v
 }
 
 // rotationRequested reports whether a plan/state pair of rotation_trigger values asks

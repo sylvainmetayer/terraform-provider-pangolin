@@ -3054,17 +3054,26 @@ func TestReKey_SendsNewSecret(t *testing.T) {
 		gotPath, gotBody = r.Method+" "+r.URL.Path, string(b)
 		writeEnvelope(t, w, http.StatusOK, map[string]any{})
 	})
-	if err := c.ReKeySite(context.Background(), 3, "s3cret"); err != nil {
+	if err := c.ReKeySite(context.Background(), 3, "s3cret", true); err != nil {
 		t.Fatalf("ReKeySite: %v", err)
 	}
 	if gotPath != "POST /v1/re-key/3/regenerate-site-secret" || !strings.Contains(gotBody, `"type":"newt"`) || !strings.Contains(gotBody, `"secret":"s3cret"`) {
 		t.Errorf("site re-key sent %s %s", gotPath, gotBody)
 	}
-	if err := c.ReKeyClient(context.Background(), 4, "olm"); err != nil {
+	if err := c.ReKeyClient(context.Background(), 4, "olm", true); err != nil {
 		t.Fatalf("ReKeyClient: %v", err)
 	}
 	if gotPath != "POST /v1/re-key/4/regenerate-client-secret" || !strings.Contains(gotBody, `"secret":"olm"`) {
 		t.Errorf("client re-key sent %s %s", gotPath, gotBody)
+	}
+	if strings.Contains(gotBody, "disconnect") {
+		t.Errorf("default disconnect sent: %s", gotBody)
+	}
+	if err := c.ReKeySite(context.Background(), 3, "s3cret", false); err != nil {
+		t.Fatalf("ReKeySite: %v", err)
+	}
+	if !strings.Contains(gotBody, `"disconnect":false`) {
+		t.Errorf("disconnect=false not sent: %s", gotBody)
 	}
 }
 
