@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 )
 
 // Redirect is the subset of a redirect row the provider uses. Create,
@@ -91,4 +93,45 @@ func (c *Client) UpdateRedirect(ctx context.Context, redirectID int, req *Redire
 func (c *Client) DeleteRedirect(ctx context.Context, redirectID int) error {
 	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/org/%s/redirects/%d", c.OrgID, redirectID), nil)
 	return err
+}
+
+// RedirectListItem is a redirect as GET /org/{org}/redirects returns it:
+// the redirect plus the attached resource and the base domain.
+type RedirectListItem struct {
+	Redirect
+	ResourceName       *string `json:"resourceName"`
+	ResourceNiceID     *string `json:"resourceNiceId"`
+	ResourceFullDomain *string `json:"resourceFullDomain"`
+	BaseDomain         *string `json:"baseDomain"`
+}
+
+// RedirectListQuery filters ListRedirects. Zero values mean no filter.
+type RedirectListQuery struct {
+	Query string
+	// Type is "permanent" (308) or "temporary" (307).
+	Type       string
+	Enabled    *bool
+	ResourceID *int
+	DomainID   string
+}
+
+// ListRedirects lists the redirects of the org, sorted by name.
+func (c *Client) ListRedirects(ctx context.Context, q RedirectListQuery) ([]RedirectListItem, error) {
+	v := url.Values{"sort_by": {"name"}}
+	if q.Query != "" {
+		v.Set("query", q.Query)
+	}
+	if q.Type != "" {
+		v.Set("type", q.Type)
+	}
+	if q.Enabled != nil {
+		v.Set("enabled", strconv.FormatBool(*q.Enabled))
+	}
+	if q.ResourceID != nil {
+		v.Set("resourceId", strconv.Itoa(*q.ResourceID))
+	}
+	if q.DomainID != "" {
+		v.Set("domainId", q.DomainID)
+	}
+	return listOrgQuery[RedirectListItem](ctx, c, "redirects", v.Encode(), "redirects")
 }

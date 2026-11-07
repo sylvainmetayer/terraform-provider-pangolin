@@ -256,6 +256,7 @@ func (p *PangolinProvider) DataSources(_ context.Context) []func() datasource.Da
 		datasources.NewAICatalogModelsDataSource,
 		datasources.NewAIBudgetsDataSource,
 		datasources.NewVirtualAPIKeysDataSource,
+		datasources.NewRedirectsDataSource,
 	}
 }
 
