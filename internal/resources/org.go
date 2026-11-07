@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
@@ -44,6 +45,9 @@ type OrgResourceModel struct {
 	LogRetentionDaysAccess     types.Int64 `tfsdk:"log_retention_days_access"`
 	LogRetentionDaysAction     types.Int64 `tfsdk:"log_retention_days_action"`
 	LogRetentionDaysConnection types.Int64 `tfsdk:"log_retention_days_connection"`
+	LogRetentionDaysAISessions types.Int64 `tfsdk:"log_retention_days_ai_sessions"`
+	LogRetentionDaysSSH        types.Int64 `tfsdk:"log_retention_days_ssh"`
+	NewtAutoUpdate             types.Bool  `tfsdk:"newt_auto_update"`
 
 	// Read-only enterprise / billing fields
 	CreatedAt       types.String `tfsdk:"created_at"`
@@ -179,6 +183,36 @@ func (r *OrgResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				},
 				Validators: []validator.Int64{
 					int64validator.AtLeast(0),
+				},
+			},
+			"log_retention_days_ai_sessions": schema.Int64Attribute{
+				Description: "Retention in days for the AI gateway session log. `0` disables retention. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result. Null when the server does not report it.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Int64{
+					int64validator.AtLeast(0),
+				},
+			},
+			"log_retention_days_ssh": schema.Int64Attribute{
+				Description: "Retention in days for the SSH session log. `0` disables retention. Requires Pangolin 1.26.0 or later (an older server refuses the field); enterprise: a server without a license ignores it, and the apply fails with an inconsistent result. Null when the server does not report it.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Int64{
+					int64validator.AtLeast(0),
+				},
+			},
+			"newt_auto_update": schema.BoolAttribute{
+				Description: "Let every Newt site connector of the organization update itself. Enterprise: a server without a license forces it to `false`, so `true` fails with an inconsistent result. Null when the server does not report it.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 			// Read-only fields
@@ -370,6 +404,18 @@ func buildUpdateOrgRequest(plan OrgResourceModel) *client.UpdateOrgRequest {
 		v := int(plan.LogRetentionDaysConnection.ValueInt64())
 		req.SettingsLogRetentionDaysConnection = &v
 	}
+	if !plan.LogRetentionDaysAISessions.IsNull() && !plan.LogRetentionDaysAISessions.IsUnknown() {
+		v := int(plan.LogRetentionDaysAISessions.ValueInt64())
+		req.SettingsLogRetentionDaysAISessions = &v
+	}
+	if !plan.LogRetentionDaysSSH.IsNull() && !plan.LogRetentionDaysSSH.IsUnknown() {
+		v := int(plan.LogRetentionDaysSSH.ValueInt64())
+		req.SettingsLogRetentionDaysSsh = &v
+	}
+	if !plan.NewtAutoUpdate.IsNull() && !plan.NewtAutoUpdate.IsUnknown() {
+		v := plan.NewtAutoUpdate.ValueBool()
+		req.SettingsEnableGlobalNewtAutoUpdate = &v
+	}
 	return req
 }
 
@@ -385,6 +431,9 @@ func hasOrgPolicyChanges(plan OrgResourceModel) bool {
 		plan.LogRetentionDaysAccess,
 		plan.LogRetentionDaysAction,
 		plan.LogRetentionDaysConnection,
+		plan.LogRetentionDaysAISessions,
+		plan.LogRetentionDaysSSH,
+		plan.NewtAutoUpdate,
 	} {
 		if !v.IsNull() {
 			return true
@@ -427,6 +476,9 @@ func orgToModel(org *client.Org, prior OrgResourceModel) OrgResourceModel {
 	} else {
 		m.PasswordExpiryDays = types.Int64Null()
 	}
+	m.LogRetentionDaysAISessions = tfconv.Int64FromIntPtr(org.SettingsLogRetentionDaysAISessions)
+	m.LogRetentionDaysSSH = tfconv.Int64FromIntPtr(org.SettingsLogRetentionDaysSsh)
+	m.NewtAutoUpdate = tfconv.BoolFromPtr(org.SettingsEnableGlobalNewtAutoUpdate)
 	if m.Subnet.ValueString() == "" && !prior.Subnet.IsNull() {
 		m.Subnet = prior.Subnet
 	}

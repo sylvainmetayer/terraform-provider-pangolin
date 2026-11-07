@@ -30,10 +30,15 @@ resource "pangolin_org" "example" {
   # Audit log retention (days). 0 disables a stream.
   # The access / action / connection streams require an active
   # enterprise subscription on Pangolin Cloud.
-  log_retention_days_request    = 30
-  log_retention_days_access     = 90
-  log_retention_days_action     = 90
-  log_retention_days_connection = 30
+  log_retention_days_request     = 30
+  log_retention_days_access      = 90
+  log_retention_days_action      = 90
+  log_retention_days_connection  = 30
+  log_retention_days_ai_sessions = 7
+  log_retention_days_ssh         = 90 # Pangolin 1.26.0+
+
+  # Newt site connectors update themselves (enterprise).
+  newt_auto_update = true
 }
 
 # The SSH CA keypair is returned by the API and stored in state.
@@ -58,9 +63,12 @@ output "ssh_ca_public_key" {
 
 - `log_retention_days_access` (Number) Retention in days for the access audit log. `0` disables retention. Requires an active enterprise subscription on Pangolin Cloud.
 - `log_retention_days_action` (Number) Retention in days for the action audit log. `0` disables retention. Requires an active enterprise subscription on Pangolin Cloud.
+- `log_retention_days_ai_sessions` (Number) Retention in days for the AI gateway session log. `0` disables retention. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result. Null when the server does not report it.
 - `log_retention_days_connection` (Number) Retention in days for the connection audit log. `0` disables retention. Requires an active enterprise subscription on Pangolin Cloud.
 - `log_retention_days_request` (Number) Retention in days for the request audit log (proxy traffic). `0` disables retention.
+- `log_retention_days_ssh` (Number) Retention in days for the SSH session log. `0` disables retention. Requires Pangolin 1.26.0 or later (an older server refuses the field); enterprise: a server without a license ignores it, and the apply fails with an inconsistent result. Null when the server does not report it.
 - `max_session_length_hours` (Number) Maximum session length in hours before users must re-authenticate. Unset means no enforced cap (server default). Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `newt_auto_update` (Boolean) Let every Newt site connector of the organization update itself. Enterprise: a server without a license forces it to `false`, so `true` fails with an inconsistent result. Null when the server does not report it.
 - `password_expiry_days` (Number) Force users to rotate their password after this many days. Unset means no enforced rotation. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
 - `require_two_factor` (Boolean) Force two-factor authentication for all members of the organization. Unset means inherit the server default. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
 
