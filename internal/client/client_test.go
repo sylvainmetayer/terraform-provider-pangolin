@@ -5686,3 +5686,15 @@ func TestListAlertRules_PaginatesAndFilters(t *testing.T) {
 		t.Errorf("offsets = %v", offsets)
 	}
 }
+
+func TestCreateResourceAccessTokenRequest_PathAndPersist(t *testing.T) {
+	b, _ := json.Marshal(&CreateResourceAccessTokenRequest{})
+	if string(b) != `{}` {
+		t.Fatalf("unset fields sent: %s", b)
+	}
+	p, on := "/albums", true
+	b, _ = json.Marshal(&CreateResourceAccessTokenRequest{Path: &p, PersistSession: &on})
+	if !strings.Contains(string(b), `"path":"/albums"`) || !strings.Contains(string(b), `"persistSession":true`) {
+		t.Fatalf("body %s", b)
+	}
+}

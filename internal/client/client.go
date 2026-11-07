@@ -3835,6 +3835,8 @@ type ResourceAccessToken struct {
 	Title         *string `json:"title"`
 	Description   *string `json:"description"`
 	CreatedAt     int64   `json:"createdAt"`
+	// Not returned before persistSession existed: nil reads as false.
+	PersistSession *bool `json:"persistSession"`
 
 	// CREATE-only: the bearer secret. Empty on list responses.
 	AccessToken string `json:"accessToken,omitempty"`
@@ -3855,6 +3857,8 @@ type CreateResourceAccessTokenRequest struct {
 	Title           *string `json:"title,omitempty"`
 	Description     *string `json:"description,omitempty"`
 	ValidForSeconds *int64  `json:"validForSeconds,omitempty"`
+	Path            *string `json:"path,omitempty"`
+	PersistSession  *bool   `json:"persistSession,omitempty"`
 }
 
 // CreateResourceAccessToken provisions a new access token on an HTTP

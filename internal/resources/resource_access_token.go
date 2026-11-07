@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
@@ -31,6 +35,8 @@ type ResourceAccessTokenModel struct {
 	Title           types.String `tfsdk:"title"`
 	Description     types.String `tfsdk:"description"`
 	ValidForSeconds types.Int64  `tfsdk:"valid_for_seconds"`
+	Path            types.String `tfsdk:"path"`
+	PersistSession  types.Bool   `tfsdk:"persist_session"`
 	SessionLength   types.Int64  `tfsdk:"session_length"`
 	ExpiresAt       types.Int64  `tfsdk:"expires_at"`
 	CreatedAt       types.Int64  `tfsdk:"created_at"`
@@ -86,6 +92,23 @@ func (r *ResourceAccessTokenResource) Schema(_ context.Context, _ resource.Schem
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"path": schema.StringAttribute{
+				Description: "Path the visitor is redirected to once authenticated with the token (its share link), for example `/albums/1`. Not read back from the API: after an import it is null.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{stringvalidator.LengthAtLeast(1)},
+			},
+			"persist_session": schema.BoolAttribute{
+				Description: "Whether a visit with the token opens a browser session (cookie), so the following requests need no token. With `false` (the default), every request must carry the token, as for an API or health check client.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
 				},
 			},
 			"valid_for_seconds": schema.Int64Attribute{
@@ -171,6 +194,11 @@ func (r *ResourceAccessTokenResource) Create(ctx context.Context, req resource.C
 		v := plan.ValidForSeconds.ValueInt64()
 		body.ValidForSeconds = &v
 	}
+	body.Path = tfconv.StringToPtr(plan.Path)
+	if plan.PersistSession.ValueBool() {
+		// Only true is sent: false is the server default.
+		body.PersistSession = tfconv.BoolToPtr(plan.PersistSession)
+	}
 
 	tok, err := r.client.CreateResourceAccessToken(ctx, int(plan.ResourceID.ValueInt64()), body)
 	if err != nil {
@@ -215,6 +243,13 @@ func (r *ResourceAccessTokenResource) Read(ctx context.Context, req resource.Rea
 	state.Title = tfconv.StringFromPtr(tok.Title)
 	state.Description = tfconv.StringFromPtr(tok.Description)
 	state.ExpiresAt = tfconv.Int64FromInt64Ptr(tok.ExpiresAt)
+	// Keep the prior value when the API omits the field: forcing false would
+	// make a persist_session = true token replace (and lose its secret) on every plan.
+	if tok.PersistSession != nil {
+		state.PersistSession = types.BoolValue(*tok.PersistSession)
+	} else if state.PersistSession.IsNull() || state.PersistSession.IsUnknown() {
+		state.PersistSession = types.BoolValue(false)
+	}
 	// token (bearer secret) is preserved from existing state - the list endpoint never exposes it.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -253,6 +288,8 @@ func (r *ResourceAccessTokenResource) ImportState(ctx context.Context, req resou
 		Title:           tfconv.StringFromPtr(tok.Title),
 		Description:     tfconv.StringFromPtr(tok.Description),
 		ValidForSeconds: types.Int64Null(),
+		Path:            types.StringNull(),
+		PersistSession:  types.BoolValue(tok.PersistSession != nil && *tok.PersistSession),
 		SessionLength:   types.Int64Value(tok.SessionLength),
 		ExpiresAt:       tfconv.Int64FromInt64Ptr(tok.ExpiresAt),
 		CreatedAt:       types.Int64Value(tok.CreatedAt),
