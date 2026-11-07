@@ -16,11 +16,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
-	_ resource.Resource                = &IDPResource{}
-	_ resource.ResourceWithImportState = &IDPResource{}
+	_ resource.Resource                   = &IDPResource{}
+	_ resource.ResourceWithImportState    = &IDPResource{}
+	_ resource.ResourceWithValidateConfig = &IDPResource{}
 )
 
 // IDPResource manages a Pangolin OIDC Identity Provider.
@@ -30,20 +32,21 @@ type IDPResource struct {
 
 // IDPResourceModel describes the resource data model.
 type IDPResourceModel struct {
-	ID             types.Int64  `tfsdk:"id"`
-	Name           types.String `tfsdk:"name"`
-	ClientID       types.String `tfsdk:"client_id"`
-	ClientSecret   types.String `tfsdk:"client_secret"`
-	AuthURL        types.String `tfsdk:"auth_url"`
-	TokenURL       types.String `tfsdk:"token_url"`
-	IdentifierPath types.String `tfsdk:"identifier_path"`
-	EmailPath      types.String `tfsdk:"email_path"`
-	NamePath       types.String `tfsdk:"name_path"`
-	Scopes         types.String `tfsdk:"scopes"`
-	AutoProvision  types.Bool   `tfsdk:"auto_provision"`
-	Tags           types.String `tfsdk:"tags"`
-	Variant        types.String `tfsdk:"variant"`
-	RedirectURL    types.String `tfsdk:"redirect_url"`
+	ID                  types.Int64  `tfsdk:"id"`
+	Name                types.String `tfsdk:"name"`
+	ClientID            types.String `tfsdk:"client_id"`
+	ClientSecret        types.String `tfsdk:"client_secret"`
+	AuthURL             types.String `tfsdk:"auth_url"`
+	TokenURL            types.String `tfsdk:"token_url"`
+	IdentifierPath      types.String `tfsdk:"identifier_path"`
+	EmailPath           types.String `tfsdk:"email_path"`
+	NamePath            types.String `tfsdk:"name_path"`
+	Scopes              types.String `tfsdk:"scopes"`
+	AutoProvision       types.Bool   `tfsdk:"auto_provision"`
+	SessionRevalidation types.Bool   `tfsdk:"session_revalidation"`
+	Tags                types.String `tfsdk:"tags"`
+	Variant             types.String `tfsdk:"variant"`
+	RedirectURL         types.String `tfsdk:"redirect_url"`
 }
 
 // NewIDPResource returns a new resource factory.
@@ -141,6 +144,7 @@ func (r *IDPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
 			},
+			"session_revalidation": sessionRevalidationAttribute(),
 			"tags": schema.StringAttribute{
 				Description: "Optional tags associated with the IDP.",
 				Optional:    true,
@@ -191,18 +195,19 @@ func (r *IDPResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 
 	result, err := r.client.CreateIDP(ctx, &client.CreateIDPRequest{
-		Name:           plan.Name.ValueString(),
-		ClientID:       plan.ClientID.ValueString(),
-		ClientSecret:   plan.ClientSecret.ValueString(),
-		AuthURL:        plan.AuthURL.ValueString(),
-		TokenURL:       plan.TokenURL.ValueString(),
-		IdentifierPath: plan.IdentifierPath.ValueString(),
-		EmailPath:      plan.EmailPath.ValueString(),
-		NamePath:       plan.NamePath.ValueString(),
-		Scopes:         plan.Scopes.ValueString(),
-		AutoProvision:  plan.AutoProvision.ValueBool(),
-		Tags:           plan.Tags.ValueString(),
-		Variant:        plan.Variant.ValueString(),
+		Name:                plan.Name.ValueString(),
+		ClientID:            plan.ClientID.ValueString(),
+		ClientSecret:        plan.ClientSecret.ValueString(),
+		AuthURL:             plan.AuthURL.ValueString(),
+		TokenURL:            plan.TokenURL.ValueString(),
+		IdentifierPath:      plan.IdentifierPath.ValueString(),
+		EmailPath:           plan.EmailPath.ValueString(),
+		NamePath:            plan.NamePath.ValueString(),
+		Scopes:              plan.Scopes.ValueString(),
+		AutoProvision:       plan.AutoProvision.ValueBool(),
+		Tags:                plan.Tags.ValueString(),
+		SessionRevalidation: tfconv.BoolToPtr(plan.SessionRevalidation),
+		Variant:             plan.Variant.ValueString(),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create IDP", err.Error())
@@ -220,6 +225,7 @@ func (r *IDPResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 	plan.Name = types.StringValue(idp.Name)
 	plan.AutoProvision = types.BoolValue(idp.AutoProvision)
+	plan.SessionRevalidation = tfconv.BoolFromPtr(idp.SessionRevalidation)
 	plan.Tags = types.StringValue(idp.Tags)
 	plan.Variant = types.StringValue(resolveIDPVariant(plan.Variant, idp, oidcCfg))
 	plan.EmailPath = types.StringValue(oidcCfg.EmailPath)
@@ -257,22 +263,27 @@ func (r *IDPResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	}
 
 	err := r.client.UpdateIDP(ctx, int(plan.ID.ValueInt64()), &client.UpdateIDPRequest{
-		Name:           plan.Name.ValueString(),
-		ClientID:       plan.ClientID.ValueString(),
-		ClientSecret:   plan.ClientSecret.ValueString(),
-		AuthURL:        plan.AuthURL.ValueString(),
-		TokenURL:       plan.TokenURL.ValueString(),
-		IdentifierPath: plan.IdentifierPath.ValueString(),
-		EmailPath:      plan.EmailPath.ValueString(),
-		NamePath:       plan.NamePath.ValueString(),
-		Scopes:         plan.Scopes.ValueString(),
-		AutoProvision:  plan.AutoProvision.ValueBool(),
-		Tags:           plan.Tags.ValueString(),
-		Variant:        plan.Variant.ValueString(),
+		Name:                plan.Name.ValueString(),
+		ClientID:            plan.ClientID.ValueString(),
+		ClientSecret:        plan.ClientSecret.ValueString(),
+		AuthURL:             plan.AuthURL.ValueString(),
+		TokenURL:            plan.TokenURL.ValueString(),
+		IdentifierPath:      plan.IdentifierPath.ValueString(),
+		EmailPath:           plan.EmailPath.ValueString(),
+		NamePath:            plan.NamePath.ValueString(),
+		Scopes:              plan.Scopes.ValueString(),
+		AutoProvision:       plan.AutoProvision.ValueBool(),
+		Tags:                plan.Tags.ValueString(),
+		SessionRevalidation: tfconv.BoolToPtr(plan.SessionRevalidation),
+		Variant:             plan.Variant.ValueString(),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update IDP", err.Error())
 		return
+	}
+	if plan.SessionRevalidation.IsUnknown() {
+		// Unset and not reported before: stays unreported until the next read.
+		plan.SessionRevalidation = types.BoolNull()
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -329,6 +340,7 @@ func (r *IDPResource) ImportState(ctx context.Context, req resource.ImportStateR
 func applyIDPReadResponse(m IDPResourceModel, idp *client.IDP, cfg *client.IDPOidcConfig) IDPResourceModel {
 	m.Name = types.StringValue(idp.Name)
 	m.AutoProvision = types.BoolValue(idp.AutoProvision)
+	m.SessionRevalidation = tfconv.BoolFromPtr(idp.SessionRevalidation)
 	m.Tags = types.StringValue(idp.Tags)
 	m.Variant = types.StringValue(resolveIDPVariant(m.Variant, idp, cfg))
 	m.ClientID = types.StringValue(cfg.ClientID)
@@ -361,4 +373,13 @@ func resolveIDPVariant(prior types.String, idp *client.IDP, cfg *client.IDPOidcC
 		return prior.ValueString()
 	}
 	return "oidc"
+}
+
+func (r *IDPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg IDPResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateSessionRevalidationScopes(cfg.SessionRevalidation, cfg.Scopes, cfg.Variant)...)
 }

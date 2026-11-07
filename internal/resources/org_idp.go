@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &OrgIDPResource{}
-	_ resource.ResourceWithImportState = &OrgIDPResource{}
+	_ resource.Resource                   = &OrgIDPResource{}
+	_ resource.ResourceWithImportState    = &OrgIDPResource{}
+	_ resource.ResourceWithValidateConfig = &OrgIDPResource{}
 )
 
 // OrgIDPResource manages an OIDC Identity Provider scoped to a single
@@ -36,23 +37,24 @@ type OrgIDPResource struct {
 
 // OrgIDPResourceModel is the TF state for an org-scoped IDP.
 type OrgIDPResourceModel struct {
-	ID             types.Int64  `tfsdk:"id"`
-	OrgID          types.String `tfsdk:"org_id"`
-	Name           types.String `tfsdk:"name"`
-	ClientID       types.String `tfsdk:"client_id"`
-	ClientSecret   types.String `tfsdk:"client_secret"`
-	AuthURL        types.String `tfsdk:"auth_url"`
-	TokenURL       types.String `tfsdk:"token_url"`
-	IdentifierPath types.String `tfsdk:"identifier_path"`
-	EmailPath      types.String `tfsdk:"email_path"`
-	NamePath       types.String `tfsdk:"name_path"`
-	Scopes         types.String `tfsdk:"scopes"`
-	AutoProvision  types.Bool   `tfsdk:"auto_provision"`
-	Tags           types.String `tfsdk:"tags"`
-	Variant        types.String `tfsdk:"variant"`
-	RoleMapping    types.String `tfsdk:"role_mapping"`
-	OrgMapping     types.String `tfsdk:"org_mapping"`
-	RedirectURL    types.String `tfsdk:"redirect_url"`
+	ID                  types.Int64  `tfsdk:"id"`
+	OrgID               types.String `tfsdk:"org_id"`
+	Name                types.String `tfsdk:"name"`
+	ClientID            types.String `tfsdk:"client_id"`
+	ClientSecret        types.String `tfsdk:"client_secret"`
+	AuthURL             types.String `tfsdk:"auth_url"`
+	TokenURL            types.String `tfsdk:"token_url"`
+	IdentifierPath      types.String `tfsdk:"identifier_path"`
+	EmailPath           types.String `tfsdk:"email_path"`
+	NamePath            types.String `tfsdk:"name_path"`
+	Scopes              types.String `tfsdk:"scopes"`
+	AutoProvision       types.Bool   `tfsdk:"auto_provision"`
+	SessionRevalidation types.Bool   `tfsdk:"session_revalidation"`
+	Tags                types.String `tfsdk:"tags"`
+	Variant             types.String `tfsdk:"variant"`
+	RoleMapping         types.String `tfsdk:"role_mapping"`
+	OrgMapping          types.String `tfsdk:"org_mapping"`
+	RedirectURL         types.String `tfsdk:"redirect_url"`
 }
 
 // NewOrgIDPResource returns a new resource factory.
@@ -161,6 +163,7 @@ func (r *OrgIDPResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
 			},
+			"session_revalidation": sessionRevalidationAttribute(),
 			"tags": schema.StringAttribute{
 				Description: "Optional tags associated with the IDP.",
 				Optional:    true,
@@ -229,20 +232,21 @@ func (r *OrgIDPResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	result, err := r.client.CreateOrgIDP(ctx, plan.OrgID.ValueString(), &client.CreateIDPRequest{
-		Name:           plan.Name.ValueString(),
-		ClientID:       plan.ClientID.ValueString(),
-		ClientSecret:   plan.ClientSecret.ValueString(),
-		AuthURL:        plan.AuthURL.ValueString(),
-		TokenURL:       plan.TokenURL.ValueString(),
-		IdentifierPath: plan.IdentifierPath.ValueString(),
-		EmailPath:      plan.EmailPath.ValueString(),
-		NamePath:       plan.NamePath.ValueString(),
-		Scopes:         plan.Scopes.ValueString(),
-		AutoProvision:  plan.AutoProvision.ValueBool(),
-		Tags:           plan.Tags.ValueString(),
-		Variant:        plan.Variant.ValueString(),
-		RoleMapping:    knownStringPtr(plan.RoleMapping),
-		OrgMapping:     knownStringPtr(plan.OrgMapping),
+		Name:                plan.Name.ValueString(),
+		ClientID:            plan.ClientID.ValueString(),
+		ClientSecret:        plan.ClientSecret.ValueString(),
+		AuthURL:             plan.AuthURL.ValueString(),
+		TokenURL:            plan.TokenURL.ValueString(),
+		IdentifierPath:      plan.IdentifierPath.ValueString(),
+		EmailPath:           plan.EmailPath.ValueString(),
+		NamePath:            plan.NamePath.ValueString(),
+		Scopes:              plan.Scopes.ValueString(),
+		AutoProvision:       plan.AutoProvision.ValueBool(),
+		Tags:                plan.Tags.ValueString(),
+		SessionRevalidation: tfconv.BoolToPtr(plan.SessionRevalidation),
+		Variant:             plan.Variant.ValueString(),
+		RoleMapping:         knownStringPtr(plan.RoleMapping),
+		OrgMapping:          knownStringPtr(plan.OrgMapping),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create org IDP", err.Error())
@@ -292,19 +296,20 @@ func (r *OrgIDPResource) Update(ctx context.Context, req resource.UpdateRequest,
 	}
 
 	err := r.client.UpdateOrgIDP(ctx, plan.OrgID.ValueString(), int(plan.ID.ValueInt64()), &client.UpdateOrgIDPRequest{
-		Name:           plan.Name.ValueString(),
-		ClientID:       plan.ClientID.ValueString(),
-		ClientSecret:   plan.ClientSecret.ValueString(),
-		AuthURL:        plan.AuthURL.ValueString(),
-		TokenURL:       plan.TokenURL.ValueString(),
-		IdentifierPath: plan.IdentifierPath.ValueString(),
-		EmailPath:      plan.EmailPath.ValueString(),
-		NamePath:       plan.NamePath.ValueString(),
-		Scopes:         plan.Scopes.ValueString(),
-		AutoProvision:  plan.AutoProvision.ValueBool(),
-		Tags:           plan.Tags.ValueString(),
-		RoleMapping:    knownStringPtr(plan.RoleMapping),
-		OrgMapping:     knownStringPtr(plan.OrgMapping),
+		Name:                plan.Name.ValueString(),
+		ClientID:            plan.ClientID.ValueString(),
+		ClientSecret:        plan.ClientSecret.ValueString(),
+		AuthURL:             plan.AuthURL.ValueString(),
+		TokenURL:            plan.TokenURL.ValueString(),
+		IdentifierPath:      plan.IdentifierPath.ValueString(),
+		EmailPath:           plan.EmailPath.ValueString(),
+		NamePath:            plan.NamePath.ValueString(),
+		Scopes:              plan.Scopes.ValueString(),
+		AutoProvision:       plan.AutoProvision.ValueBool(),
+		Tags:                plan.Tags.ValueString(),
+		SessionRevalidation: tfconv.BoolToPtr(plan.SessionRevalidation),
+		RoleMapping:         knownStringPtr(plan.RoleMapping),
+		OrgMapping:          knownStringPtr(plan.OrgMapping),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update org IDP", err.Error())
@@ -391,6 +396,7 @@ func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail)
 		state.AutoProvision = types.BoolValue(*detail.IDPOrg.AutoProvision)
 	}
 	state.Tags = types.StringValue(detail.IDP.Tags)
+	state.SessionRevalidation = tfconv.BoolFromPtr(detail.IDP.SessionRevalidation)
 	state.Variant = types.StringValue(resolveIDPVariant(state.Variant, &detail.IDP, &detail.IDPOidcConfig))
 	state.ClientID = types.StringValue(detail.IDPOidcConfig.ClientID)
 	if detail.IDPOidcConfig.ClientSecret != "" {
@@ -404,4 +410,13 @@ func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail)
 	state.Scopes = types.StringValue(detail.IDPOidcConfig.Scopes)
 	state.RoleMapping = tfconv.StringFromPtr(detail.IDPOrg.RoleMapping)
 	state.OrgMapping = tfconv.StringFromPtr(detail.IDPOrg.OrgMapping)
+}
+
+func (r *OrgIDPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg OrgIDPResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateSessionRevalidationScopes(cfg.SessionRevalidation, cfg.Scopes, cfg.Variant)...)
 }

@@ -3430,6 +3430,8 @@ type IDP struct {
 	OrgCount           string `json:"orgCount,omitempty"`
 	DefaultRoleMapping string `json:"defaultRoleMapping,omitempty"`
 	DefaultOrgMapping  string `json:"defaultOrgMapping,omitempty"`
+	// SessionRevalidation is absent before Pangolin 1.26.0.
+	SessionRevalidation *bool `json:"sessionRevalidation"`
 }
 
 // IDPOidcConfig represents the OIDC configuration of an IDP.
@@ -3464,6 +3466,8 @@ type CreateIDPRequest struct {
 	AutoProvision  bool   `json:"autoProvision,omitempty"`
 	Tags           string `json:"tags,omitempty"`
 	Variant        string `json:"variant,omitempty"`
+	// Pangolin 1.26.0+: nil keeps it out of the body for older servers.
+	SessionRevalidation *bool `json:"sessionRevalidation,omitempty"`
 	// Org-scoped create only (POST /org/{org}/idp/oidc).
 	RoleMapping *string `json:"roleMapping,omitempty"`
 	OrgMapping  *string `json:"orgMapping,omitempty"`
@@ -3474,35 +3478,37 @@ type CreateIDPRequest struct {
 // AutoProvision, EmailPath, NamePath and Tags are always sent so they can be
 // turned off or emptied.
 type UpdateOrgIDPRequest struct {
-	Name           string  `json:"name,omitempty"`
-	ClientID       string  `json:"clientId,omitempty"`
-	ClientSecret   string  `json:"clientSecret,omitempty"`
-	AuthURL        string  `json:"authUrl,omitempty"`
-	TokenURL       string  `json:"tokenUrl,omitempty"`
-	IdentifierPath string  `json:"identifierPath,omitempty"`
-	EmailPath      string  `json:"emailPath"`
-	NamePath       string  `json:"namePath"`
-	Scopes         string  `json:"scopes,omitempty"`
-	AutoProvision  bool    `json:"autoProvision"`
-	Tags           string  `json:"tags"`
-	RoleMapping    *string `json:"roleMapping,omitempty"`
-	OrgMapping     *string `json:"orgMapping,omitempty"`
+	Name                string  `json:"name,omitempty"`
+	ClientID            string  `json:"clientId,omitempty"`
+	ClientSecret        string  `json:"clientSecret,omitempty"`
+	AuthURL             string  `json:"authUrl,omitempty"`
+	TokenURL            string  `json:"tokenUrl,omitempty"`
+	IdentifierPath      string  `json:"identifierPath,omitempty"`
+	EmailPath           string  `json:"emailPath"`
+	NamePath            string  `json:"namePath"`
+	Scopes              string  `json:"scopes,omitempty"`
+	AutoProvision       bool    `json:"autoProvision"`
+	Tags                string  `json:"tags"`
+	SessionRevalidation *bool   `json:"sessionRevalidation,omitempty"`
+	RoleMapping         *string `json:"roleMapping,omitempty"`
+	OrgMapping          *string `json:"orgMapping,omitempty"`
 }
 
 // UpdateIDPRequest is the payload for updating an OIDC IDP.
 type UpdateIDPRequest struct {
-	Name           string `json:"name,omitempty"`
-	ClientID       string `json:"clientId,omitempty"`
-	ClientSecret   string `json:"clientSecret,omitempty"`
-	AuthURL        string `json:"authUrl,omitempty"`
-	TokenURL       string `json:"tokenUrl,omitempty"`
-	IdentifierPath string `json:"identifierPath,omitempty"`
-	EmailPath      string `json:"emailPath,omitempty"`
-	NamePath       string `json:"namePath,omitempty"`
-	Scopes         string `json:"scopes,omitempty"`
-	AutoProvision  bool   `json:"autoProvision,omitempty"`
-	Tags           string `json:"tags,omitempty"`
-	Variant        string `json:"variant,omitempty"`
+	Name                string `json:"name,omitempty"`
+	ClientID            string `json:"clientId,omitempty"`
+	ClientSecret        string `json:"clientSecret,omitempty"`
+	AuthURL             string `json:"authUrl,omitempty"`
+	TokenURL            string `json:"tokenUrl,omitempty"`
+	IdentifierPath      string `json:"identifierPath,omitempty"`
+	EmailPath           string `json:"emailPath,omitempty"`
+	NamePath            string `json:"namePath,omitempty"`
+	Scopes              string `json:"scopes,omitempty"`
+	AutoProvision       bool   `json:"autoProvision,omitempty"`
+	Tags                string `json:"tags,omitempty"`
+	Variant             string `json:"variant,omitempty"`
+	SessionRevalidation *bool  `json:"sessionRevalidation,omitempty"`
 }
 
 // CreateIDPResponse is the response from creating an IDP.
