@@ -152,9 +152,9 @@ func (r *SiteResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	// Get site defaults (newtId, secret, address)
 	r.client.AddressMu.Lock()
-	defer r.client.AddressMu.Unlock()
 	defaults, err := r.client.GetSiteDefaults(ctx)
 	if err != nil {
+		r.client.AddressMu.Unlock()
 		resp.Diagnostics.AddError("Failed to get site defaults", err.Error())
 		return
 	}
@@ -166,6 +166,7 @@ func (r *SiteResource) Create(ctx context.Context, req resource.CreateRequest, r
 		Secret:  defaults.NewtSecret,
 		Address: defaults.Address,
 	})
+	r.client.AddressMu.Unlock() // address is taken (or the create failed); the update below needs no lock
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create site", err.Error())
 		return
@@ -184,7 +185,8 @@ func (r *SiteResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !plan.NewtAutoUpdate.IsNull() || (!plan.DockerSocketEnabled.IsUnknown() && plan.DockerSocketEnabled.ValueBool() != site.DockerSocketEnabled) {
 		site, err = r.client.UpdateSite(ctx, site.SiteID, siteUpdateRequest(plan))
 		if err != nil {
-			// Keep the site in the state: the next apply retries the settings.
+			// Keep the site in the state: Terraform taints it, so it is destroyed
+			// on the next apply instead of leaking on the server.
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			resp.Diagnostics.AddError("Failed to apply site settings after creation", err.Error())
 			return
