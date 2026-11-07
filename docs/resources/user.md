@@ -32,7 +32,7 @@ resource "pangolin_user" "alice" {
 ### Required
 
 - `idp_id` (Number) ID of the identity provider the user signs in with. `oidc` is the only user type the server accepts, and it needs an IdP.
-- `role_id` (Number) The role ID to assign to the user.
+- `role_id` (Number) The role ID given to the user at creation. Changing it replaces the user.
 - `username` (String) The username.
 
 ### Optional
