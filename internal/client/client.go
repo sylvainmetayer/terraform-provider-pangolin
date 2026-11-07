@@ -3416,7 +3416,8 @@ type CreateIDPRequest struct {
 
 // UpdateOrgIDPRequest is the payload of POST /org/{org}/idp/{id}/oidc.
 // The server schema is strict: it has no variant and rejects one.
-// AutoProvision is always sent so it can be turned off.
+// AutoProvision, EmailPath, NamePath and Tags are always sent so they can be
+// turned off or emptied.
 type UpdateOrgIDPRequest struct {
 	Name           string  `json:"name,omitempty"`
 	ClientID       string  `json:"clientId,omitempty"`
@@ -3424,11 +3425,11 @@ type UpdateOrgIDPRequest struct {
 	AuthURL        string  `json:"authUrl,omitempty"`
 	TokenURL       string  `json:"tokenUrl,omitempty"`
 	IdentifierPath string  `json:"identifierPath,omitempty"`
-	EmailPath      string  `json:"emailPath,omitempty"`
-	NamePath       string  `json:"namePath,omitempty"`
+	EmailPath      string  `json:"emailPath"`
+	NamePath       string  `json:"namePath"`
 	Scopes         string  `json:"scopes,omitempty"`
 	AutoProvision  bool    `json:"autoProvision"`
-	Tags           string  `json:"tags,omitempty"`
+	Tags           string  `json:"tags"`
 	RoleMapping    *string `json:"roleMapping,omitempty"`
 	OrgMapping     *string `json:"orgMapping,omitempty"`
 }
@@ -3646,8 +3647,9 @@ func (c *Client) GetOrgIDP(ctx context.Context, orgID string, idpID int) (*OrgID
 	return &result, nil
 }
 
-// UpdateOrgIDP updates the OIDC config of an org-scoped IDP. Same
-// body shape as [UpdateIDPRequest]; response is the trimmed
+// UpdateOrgIDP updates the OIDC config of an org-scoped IDP. The body
+// is [UpdateOrgIDPRequest] (no variant, autoProvision always sent,
+// role/org mappings); response is the trimmed
 // `{idpId}` only - fetch with [Client.GetOrgIDP] if the full payload
 // is needed.
 func (c *Client) UpdateOrgIDP(ctx context.Context, orgID string, idpID int, req *UpdateOrgIDPRequest) error {

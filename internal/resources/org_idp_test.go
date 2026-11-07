@@ -167,6 +167,29 @@ func TestHydrateOrgIDP_AutoProvisionFromOrgRow(t *testing.T) {
 	}
 }
 
+// Older servers do not send idpOrg.autoProvision: fall back to the idp row.
+func TestHydrateOrgIDP_AutoProvisionFallsBackToIDPRow(t *testing.T) {
+	raw := `{"idp":{"idpId":5,"autoProvision":true},"idpOidcConfig":{},"idpOrg":{"idpId":5,"orgId":"o"}}`
+	var d client.OrgIDPDetail
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	state := OrgIDPResourceModel{}
+	hydrateOrgIDPState(&state, &d)
+	if !state.AutoProvision.ValueBool() {
+		t.Error("auto_provision must fall back to the idp row when idpOrg omits it")
+	}
+}
+
+func TestKnownStringPtr(t *testing.T) {
+	if knownStringPtr(types.StringNull()) != nil || knownStringPtr(types.StringUnknown()) != nil {
+		t.Error("null and unknown must map to nil")
+	}
+	if p := knownStringPtr(types.StringValue("x")); p == nil || *p != "x" {
+		t.Errorf("known value = %v, want pointer to x", p)
+	}
+}
+
 func TestHydrateOrgIDPAfterWrite_KeepsPlannedSecret(t *testing.T) {
 	detail := &client.OrgIDPDetail{
 		IDP: client.IDP{IDPId: 5, Name: "g"},
