@@ -23,8 +23,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &AIProviderResource{}
-	_ resource.ResourceWithImportState = &AIProviderResource{}
+	_ resource.Resource                   = &AIProviderResource{}
+	_ resource.ResourceWithImportState    = &AIProviderResource{}
+	_ resource.ResourceWithValidateConfig = &AIProviderResource{}
 )
 
 // AIProviderResource manages an AI provider of the organization.
@@ -148,6 +149,40 @@ func (r *AIProviderResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 		},
+	}
+}
+
+// ValidateConfig mirrors the server's upstream checks, so that a bad config
+// fails at plan time. Without it an upstream_url the server drops (target
+// mode) or cannot be cleared (omitted) ends in an "inconsistent result".
+func (r *AIProviderResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var typ, mode, url types.String
+	var caps types.Set
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("type"), &typ)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("routing_mode"), &mode)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("upstream_url"), &url)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("capabilities"), &caps)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !mode.IsUnknown() {
+		if mode.ValueString() == "target" {
+			if !typ.IsUnknown() && typ.ValueString() != "custom" {
+				resp.Diagnostics.AddAttributeError(path.Root("routing_mode"), "Unsupported routing_mode",
+					"`routing_mode = \"target\"` is only allowed for `custom` providers.")
+			}
+			if !url.IsNull() {
+				resp.Diagnostics.AddAttributeError(path.Root("upstream_url"), "Unsupported upstream_url",
+					"`upstream_url` must not be set when `routing_mode = \"target\"`: the server drops it.")
+			}
+		} else if url.IsNull() {
+			resp.Diagnostics.AddAttributeError(path.Root("upstream_url"), "Missing upstream_url",
+				"`upstream_url` is required unless `routing_mode = \"target\"`.")
+		}
+	}
+	if !typ.IsUnknown() && typ.ValueString() == "custom" && caps.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("capabilities"), "Missing capabilities",
+			"`capabilities` is required for `custom` providers.")
 	}
 }
 
