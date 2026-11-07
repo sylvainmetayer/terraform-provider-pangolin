@@ -86,6 +86,11 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_org_idp` | OIDC IDP scoped to a single organization (single-resource alternative to `pangolin_idp` + `pangolin_idp_org`) |
 | `pangolin_alert_rule` | Alert rule: email and webhook notifications on site, health check or resource events (Enterprise) |
 | `pangolin_resource_policy` | Shared resource policy: SSO, role / user grants, email whitelist, rules (Enterprise) |
+| `pangolin_ai_providers` | List the AI gateway providers (no API key, no headers) |
+| `pangolin_ai_models` | List the model entries of an AI provider |
+| `pangolin_ai_catalog_models` | List the model keys Pangolin's catalog knows for a provider type |
+| `pangolin_ai_budgets` | List the AI gateway budgets |
+| `pangolin_virtual_api_keys` | List the manual virtual API keys (never the secret) |
 | `pangolin_resource_policy_password` | Password protection for a resource policy (Enterprise) |
 | `pangolin_resource_policy_pincode` | PIN-code protection for a resource policy (Enterprise) |
 | `pangolin_resource_policy_header_auth` | Header-based authentication for a resource policy (Enterprise) |

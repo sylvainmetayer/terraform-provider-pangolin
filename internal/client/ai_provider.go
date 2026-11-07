@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // AIProvider is an AI provider of the organization (Pangolin 1.22+), as
@@ -85,4 +86,14 @@ func (c *Client) UpdateAIProvider(ctx context.Context, providerID int, req *AIPr
 func (c *Client) DeleteAIProvider(ctx context.Context, providerID int) error {
 	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/ai-provider/%d", providerID), nil)
 	return err
+}
+
+// ListAIProviders lists the AI providers of the org. The API key is not
+// part of the list. query filters on the name (case-insensitive).
+func (c *Client) ListAIProviders(ctx context.Context, query string) ([]AIProvider, error) {
+	q := url.Values{}
+	if query != "" {
+		q.Set("query", query)
+	}
+	return listOrgQuery[AIProvider](ctx, c, "ai-providers", q.Encode(), "providers")
 }
