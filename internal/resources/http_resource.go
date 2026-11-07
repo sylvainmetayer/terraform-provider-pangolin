@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"regexp"
 
@@ -618,9 +619,27 @@ func (r *HTTPResource) rollBackCreate(ctx context.Context, id int, resp *resourc
 // value still unknown at validation, is left alone: it round-trips as
 // is (and Terraform validates the config again once it is known).
 func (r *HTTPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var mode types.String
+	var mode, subdomain types.String
+	var matchBase types.Bool
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("mode"), &mode)...)
-	if resp.Diagnostics.HasError() || mode.IsNull() || mode.IsUnknown() || mode.ValueString() == "http" {
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("subdomain"), &subdomain)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("match_base_domain"), &matchBase)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// The server refuses true off an HTTP wildcard, or turns it off when
+	// the resource leaves one: either way the apply would fail.
+	if matchBase.ValueBool() {
+		if !mode.IsNull() && !mode.IsUnknown() && mode.ValueString() != "http" {
+			resp.Diagnostics.AddAttributeError(path.Root("match_base_domain"), "match_base_domain needs an HTTP resource",
+				fmt.Sprintf("`match_base_domain = true` only applies to `mode = \"http\"`, not %q.", mode.ValueString()))
+		}
+		if !subdomain.IsUnknown() && !strings.HasPrefix(subdomain.ValueString(), "*") {
+			resp.Diagnostics.AddAttributeError(path.Root("match_base_domain"), "match_base_domain needs a wildcard subdomain",
+				"`match_base_domain = true` requires a wildcard `subdomain` (`*` or `*.apps`).")
+		}
+	}
+	if mode.IsNull() || mode.IsUnknown() || mode.ValueString() == "http" {
 		return
 	}
 	for _, attr := range []string{"headers", "response_headers"} {
@@ -743,6 +762,11 @@ func (r *HTTPResource) ImportState(ctx context.Context, req resource.ImportState
 func moveToNewSubdomain(req *client.UpdateResourceRequest, plan, state HTTPResourceModel) {
 	if !plan.Subdomain.Equal(state.Subdomain) && !plan.DomainID.IsNull() && !plan.DomainID.IsUnknown() {
 		req.DomainID = plan.DomainID.ValueString()
+	}
+	// The value carried over from the state (false on a non-wildcard
+	// subdomain, which the server refuses) is not a change: leave it out.
+	if plan.Subdomain.Equal(state.Subdomain) && plan.MatchBaseDomain.Equal(state.MatchBaseDomain) {
+		req.MatchBaseDomain = nil
 	}
 }
 

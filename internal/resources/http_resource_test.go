@@ -799,6 +799,23 @@ func TestMoveToNewSubdomain(t *testing.T) {
 	}
 }
 
+func TestMoveToNewSubdomainDropsUnchangedMatchBaseDomain(t *testing.T) {
+	state := HTTPResourceModel{Subdomain: types.StringValue("app"), MatchBaseDomain: types.BoolValue(false)}
+	f := false
+	req := &client.UpdateResourceRequest{MatchBaseDomain: &f}
+	moveToNewSubdomain(req, state, state)
+	if req.MatchBaseDomain != nil {
+		t.Fatal("unchanged match_base_domain sent")
+	}
+	plan := state
+	plan.MatchBaseDomain = types.BoolValue(true)
+	req = &client.UpdateResourceRequest{MatchBaseDomain: &f}
+	moveToNewSubdomain(req, plan, state)
+	if req.MatchBaseDomain == nil {
+		t.Fatal("changed match_base_domain dropped")
+	}
+}
+
 // match_base_domain is 1.26+: unset, it stays out of the body (1.25 refuses the key).
 func TestBuildHTTPResourceUpdateRequestMatchBaseDomain(t *testing.T) {
 	plan := HTTPResourceModel{Name: types.StringValue("r"), MatchBaseDomain: types.BoolUnknown()}
