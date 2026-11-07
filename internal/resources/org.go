@@ -412,10 +412,7 @@ func buildUpdateOrgRequest(plan OrgResourceModel) *client.UpdateOrgRequest {
 		v := int(plan.LogRetentionDaysSSH.ValueInt64())
 		req.SettingsLogRetentionDaysSsh = &v
 	}
-	if !plan.NewtAutoUpdate.IsNull() && !plan.NewtAutoUpdate.IsUnknown() {
-		v := plan.NewtAutoUpdate.ValueBool()
-		req.SettingsEnableGlobalNewtAutoUpdate = &v
-	}
+	req.SettingsEnableGlobalNewtAutoUpdate = tfconv.BoolToPtr(plan.NewtAutoUpdate)
 	return req
 }
 
