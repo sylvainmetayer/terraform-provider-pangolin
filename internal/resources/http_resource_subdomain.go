@@ -15,10 +15,12 @@ func subdomainChanges(ctx context.Context, plan tfsdk.Plan, state tfsdk.State) b
 	if plan.Raw.IsNull() || state.Raw.IsNull() {
 		return false
 	}
-	var p, s types.String
+	var p, s, mode types.String
 	plan.GetAttribute(ctx, path.Root("subdomain"), &p)
 	state.GetAttribute(ctx, path.Root("subdomain"), &s)
-	return !p.Equal(s)
+	plan.GetAttribute(ctx, path.Root("mode"), &mode)
+	// tcp / udp ignore the subdomain: nothing moves.
+	return !p.Equal(s) && (mode.IsUnknown() || resourceModeUsesDomain(mode.ValueString()))
 }
 
 // followSubdomain runs after UseStateForUnknown: the value it kept from
