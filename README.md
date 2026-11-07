@@ -58,6 +58,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_ai_provider` | AI provider (OpenAI, Anthropic, Gemini, Bedrock, custom...) served by `inference` resources |
 | `pangolin_ai_model` | Allow or block one model of an AI provider |
 | `pangolin_virtual_api_key` | Bearer key for the public inference resources of the AI gateway |
+| `pangolin_ai_budget` | Spending cap of the AI gateway, per provider, model, resource, role, key or organization |
 | `pangolin_api_key` | API key |
 | `pangolin_api_key_actions` | Set of actions (permissions) granted to an API key |
 | `pangolin_client` | OLM client device |

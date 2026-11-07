@@ -35,6 +35,7 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateDomain", func(c *Client) error { _, err := c.CreateDomain(ctx, "org", &CreateDomainRequest{}); return err }},
 		{"CreateAIModel", func(c *Client) error { _, err := c.CreateAIModel(ctx, 1, &AIModelRequest{}); return err }},
 		{"CreateVirtualAPIKey", func(c *Client) error { _, err := c.CreateVirtualAPIKey(ctx, &VirtualAPIKeyRequest{}); return err }},
+		{"CreateAIBudget", func(c *Client) error { _, err := c.CreateAIBudget(ctx, &AIBudgetRequest{}); return err }},
 		{"CreateRedirect", func(c *Client) error { _, err := c.CreateRedirect(ctx, &RedirectRequest{}); return err }},
 		{"CreateResourceRule", func(c *Client) error {
 			_, err := c.CreateResourceRule(ctx, 1, &SetResourceRuleRequest{})
