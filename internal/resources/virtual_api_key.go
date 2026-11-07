@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &VirtualAPIKeyResource{}
-	_ resource.ResourceWithImportState = &VirtualAPIKeyResource{}
+	_ resource.Resource                   = &VirtualAPIKeyResource{}
+	_ resource.ResourceWithImportState    = &VirtualAPIKeyResource{}
+	_ resource.ResourceWithValidateConfig = &VirtualAPIKeyResource{}
 )
 
 // VirtualAPIKeyResource manages a manual virtual API key.
@@ -95,11 +96,31 @@ func (r *VirtualAPIKeyResource) Schema(_ context.Context, _ resource.SchemaReque
 				Validators: []validator.Int64{int64validator.AtLeast(1)},
 			},
 			"secret": schema.StringAttribute{
-				Description: "The key value clients send as a bearer token.",
-				Computed:    true,
-				Sensitive:   true,
+				Description:   "The key value clients send as a bearer token.",
+				Computed:      true,
+				Sensitive:     true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
+	}
+}
+
+// ValidateConfig enforces "either all_resources or resource_ids": both set
+// would fail apply with an inconsistent result (resource_ids reads back null),
+// and neither is rejected by the API.
+func (r *VirtualAPIKeyResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var all types.Bool
+	var ids types.Set
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("all_resources"), &all)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("resource_ids"), &ids)...)
+	if resp.Diagnostics.HasError() || all.IsUnknown() || ids.IsUnknown() {
+		return
+	}
+	switch {
+	case all.ValueBool() && !ids.IsNull():
+		resp.Diagnostics.AddAttributeError(path.Root("resource_ids"), "Conflicting attributes", "resource_ids must be unset when all_resources is true.")
+	case !all.ValueBool() && ids.IsNull():
+		resp.Diagnostics.AddAttributeError(path.Root("resource_ids"), "Missing attribute", "Set resource_ids, or set all_resources to true.")
 	}
 }
 
@@ -246,6 +267,8 @@ func (r *VirtualAPIKeyResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Failed to read virtual API key", err.Error())
 		return
 	}
+	// The update response carries no secret (only GET and create do).
+	state.Secret = prior.Secret
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
