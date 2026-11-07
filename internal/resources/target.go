@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	_ resource.Resource                = &TargetResource{}
+	_ resource.Resource                   = &TargetResource{}
 	_ resource.ResourceWithImportState    = &TargetResource{}
 	_ resource.ResourceWithValidateConfig = &TargetResource{}
 )
