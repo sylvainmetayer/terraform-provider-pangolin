@@ -2,6 +2,8 @@ package datasources
 
 import (
 	"context"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -54,10 +56,12 @@ func (d *VirtualAPIKeysDataSource) Schema(_ context.Context, _ datasource.Schema
 			"search": schema.StringAttribute{
 				Description: "Only return keys whose name, description or last characters contain this text (case-insensitive).",
 				Optional:    true,
+				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"user_id": schema.StringAttribute{
 				Description: "Only return keys bound to this user ID.",
 				Optional:    true,
+				Validators:  []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"resource_id": schema.Int64Attribute{
 				Description: "Only return keys that may call this public resource (including keys allowed on all resources).",
