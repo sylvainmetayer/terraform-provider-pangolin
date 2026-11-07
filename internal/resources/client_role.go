@@ -135,7 +135,7 @@ func (r *ClientRoleResource) ImportState(ctx context.Context, req resource.Impor
 	if len(parts) == 2 {
 		clientID, err1 := strconv.ParseInt(parts[0], 10, 64)
 		roleID, err2 := strconv.ParseInt(parts[1], 10, 64)
-		if err1 == nil && err2 == nil {
+		if err1 == nil && err2 == nil && clientID > 0 && roleID > 0 {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &ClientRoleResourceModel{
 				ClientID: types.Int64Value(clientID),
 				RoleID:   types.Int64Value(roleID),

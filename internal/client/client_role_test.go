@@ -29,6 +29,12 @@ func TestClientRoleRoutes(t *testing.T) {
 	if err := c.RemoveRoleFromClient(ctx, 7, 3); err != nil {
 		t.Fatal(err)
 	}
+	old := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{"clientId": 7})
+	})
+	if _, err := old.ClientHasRole(ctx, 7, 3); err == nil {
+		t.Error("a server without roles must give an error, not a missing binding")
+	}
 	want := []string{"POST /v1/client/7/add-role/3", "GET /v1/client/7", "GET /v1/client/7", "DELETE /v1/client/7/remove-role/3"}
 	if len(calls) != len(want) {
 		t.Fatalf("calls = %v", calls)
