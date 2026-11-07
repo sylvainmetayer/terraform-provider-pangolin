@@ -23,9 +23,13 @@ resource "pangolin_idp" "example" {
   auth_url        = "https://auth.example.com/authorize"
   token_url       = "https://auth.example.com/token"
   identifier_path = "sub"
-  scopes          = "openid email profile"
+  scopes          = "openid email profile offline_access"
   email_path      = "email"
   auto_provision  = true
+
+  # Pangolin 1.26.0+, enterprise: sessions are checked against the IdP with
+  # its refresh token, which needs offline_access in scopes (not on Google).
+  session_revalidation = true
 }
 
 # A Google Workspace-flavored IdP. variant = "google" lets Pangolin pre-fill
@@ -66,6 +70,7 @@ output "redirect_url" {
 - `auto_provision` (Boolean) Whether to auto-provision users on first login. Defaults to `false`.
 - `email_path` (String) The path in the ID token for the user email.
 - `name_path` (String) The path in the ID token for the user display name.
+- `session_revalidation` (Boolean) Check each Pangolin session against the identity provider with its refresh token, so a user disabled or removed there loses access without waiting for the session to expire. Requires Pangolin 1.26.0 or later (an older server refuses the field) and an enterprise license. Pangolin needs a refresh token: with `true`, `scopes` must contain `offline_access`, except for `variant = "google"`, where it must not (Google uses `access_type=offline`). Removing the attribute keeps the current value: set `false` to turn it off. Null when the server does not report it.
 - `tags` (String) Optional tags associated with the IDP.
 - `variant` (String) OIDC variant. Refines `type = oidc` to a provider family - Pangolin uses this to pre-fill default URLs and tweak the consent flow. One of `oidc` (generic, default), `google`, `azure`. Read from the OIDC configuration; a missing value reads as `oidc`.
 

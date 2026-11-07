@@ -64,6 +64,7 @@ output "oidc_redirect_url" {
 - `name_path` (String) The path in the ID token for the user display name.
 - `org_mapping` (String) Optional expression mapping a token claim to the org binding. Null when unset.
 - `role_mapping` (String) Optional expression mapping a token claim to a Pangolin role for this org. Null when unset.
+- `session_revalidation` (Boolean) Check each Pangolin session against the identity provider with its refresh token, so a user disabled or removed there loses access without waiting for the session to expire. Requires Pangolin 1.26.0 or later (an older server refuses the field) and an enterprise license. Pangolin needs a refresh token: with `true`, `scopes` must contain `offline_access`, except for `variant = "google"`, where it must not (Google uses `access_type=offline`). Removing the attribute keeps the current value: set `false` to turn it off. Null when the server does not report it.
 - `tags` (String) Optional tags associated with the IDP.
 - `variant` (String) OIDC variant - refines `type = oidc` to a provider family. One of `oidc` (generic, default), `google`, `azure`. The server cannot change it in place: changing it replaces the IdP.
 

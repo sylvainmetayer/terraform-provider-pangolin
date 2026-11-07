@@ -5,9 +5,13 @@ resource "pangolin_idp" "example" {
   auth_url        = "https://auth.example.com/authorize"
   token_url       = "https://auth.example.com/token"
   identifier_path = "sub"
-  scopes          = "openid email profile"
+  scopes          = "openid email profile offline_access"
   email_path      = "email"
   auto_provision  = true
+
+  # Pangolin 1.26.0+, enterprise: sessions are checked against the IdP with
+  # its refresh token, which needs offline_access in scopes (not on Google).
+  session_revalidation = true
 }
 
 # A Google Workspace-flavored IdP. variant = "google" lets Pangolin pre-fill
