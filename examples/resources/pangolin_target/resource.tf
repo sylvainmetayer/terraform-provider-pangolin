@@ -15,6 +15,7 @@ resource "pangolin_target" "healthchecked" {
   method      = "http"
 
   hc_enabled             = true
+  hc_hostname            = "192.168.1.11"
   hc_path                = "/health"
   hc_method              = "GET"
   hc_status              = 200
