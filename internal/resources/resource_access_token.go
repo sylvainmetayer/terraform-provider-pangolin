@@ -95,7 +95,7 @@ func (r *ResourceAccessTokenResource) Schema(_ context.Context, _ resource.Schem
 				},
 			},
 			"path": schema.StringAttribute{
-				Description: "Path the visitor lands on after opening the resource with the token in its share link (`?p=...` style landing page), for example `/albums/1`. Not read back from the API: after an import it is null.",
+				Description: "Path the visitor is redirected to once authenticated with the token (its share link), for example `/albums/1`. Not read back from the API: after an import it is null.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -243,7 +243,13 @@ func (r *ResourceAccessTokenResource) Read(ctx context.Context, req resource.Rea
 	state.Title = tfconv.StringFromPtr(tok.Title)
 	state.Description = tfconv.StringFromPtr(tok.Description)
 	state.ExpiresAt = tfconv.Int64FromInt64Ptr(tok.ExpiresAt)
-	state.PersistSession = types.BoolValue(tok.PersistSession != nil && *tok.PersistSession)
+	// Keep the prior value when the API omits the field: forcing false would
+	// make a persist_session = true token replace (and lose its secret) on every plan.
+	if tok.PersistSession != nil {
+		state.PersistSession = types.BoolValue(*tok.PersistSession)
+	} else if state.PersistSession.IsNull() || state.PersistSession.IsUnknown() {
+		state.PersistSession = types.BoolValue(false)
+	}
 	// token (bearer secret) is preserved from existing state - the list endpoint never exposes it.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)

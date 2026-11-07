@@ -50,7 +50,7 @@ resource "pangolin_resource_access_token" "long_lived" {
 ### Optional
 
 - `description` (String) Optional description.
-- `path` (String) Path the visitor lands on after opening the resource with the token in its share link (`?p=...` style landing page), for example `/albums/1`. Not read back from the API: after an import it is null.
+- `path` (String) Path the visitor is redirected to once authenticated with the token (its share link), for example `/albums/1`. Not read back from the API: after an import it is null.
 - `persist_session` (Boolean) Whether a visit with the token opens a browser session (cookie), so the following requests need no token. With `false` (the default), every request must carry the token, as for an API or health check client.
 - `title` (String) Optional human-readable title.
 - `valid_for_seconds` (Number) Lifetime in seconds. When omitted, the API defaults to roughly 30 days (`session_length = 2592000000` ms) and `expires_at` is null (token never expires).
