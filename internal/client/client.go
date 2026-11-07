@@ -631,6 +631,9 @@ type Resource struct {
 	ApplyRules            bool    `json:"applyRules"`
 	StickySession         bool    `json:"stickySession"`
 	TLSServerName         *string `json:"tlsServerName"`
+	// Pointers: read back as null when a server does not report them.
+	LoadBalancingStrategy  *string `json:"loadBalancingStrategy"`
+	ForwardIdentityHeaders *bool   `json:"forwardIdentityHeaders"`
 
 	// 1.19 additions - routing / auth
 	SetHostHeader *string `json:"setHostHeader,omitempty"`
@@ -1982,16 +1985,18 @@ func (c *Client) ReKeyClient(ctx context.Context, clientID int, secret string) e
 // a server version does not know must stay off the payload unless
 // the config sets it: every field but `name` is `omitempty`.
 type UpdateResourceRequest struct {
-	Name                  string  `json:"name"`
-	Subdomain             *string `json:"subdomain,omitempty"`
-	SSO                   *bool   `json:"sso,omitempty"`
-	SSL                   *bool   `json:"ssl,omitempty"`
-	Enabled               *bool   `json:"enabled,omitempty"`
-	BlockAccess           *bool   `json:"blockAccess,omitempty"`
-	EmailWhitelistEnabled *bool   `json:"emailWhitelistEnabled,omitempty"`
-	ApplyRules            *bool   `json:"applyRules,omitempty"`
-	StickySession         *bool   `json:"stickySession,omitempty"`
-	TLSServerName         *string `json:"tlsServerName,omitempty"`
+	Name                   string  `json:"name"`
+	Subdomain              *string `json:"subdomain,omitempty"`
+	SSO                    *bool   `json:"sso,omitempty"`
+	SSL                    *bool   `json:"ssl,omitempty"`
+	Enabled                *bool   `json:"enabled,omitempty"`
+	BlockAccess            *bool   `json:"blockAccess,omitempty"`
+	EmailWhitelistEnabled  *bool   `json:"emailWhitelistEnabled,omitempty"`
+	ApplyRules             *bool   `json:"applyRules,omitempty"`
+	StickySession          *bool   `json:"stickySession,omitempty"`
+	LoadBalancingStrategy  *string `json:"loadBalancingStrategy,omitempty"`
+	ForwardIdentityHeaders *bool   `json:"forwardIdentityHeaders,omitempty"`
+	TLSServerName          *string `json:"tlsServerName,omitempty"`
 	// DomainID makes the server rebuild fullDomain (and wildcard) from the
 	// subdomain; without it a new subdomain is stored but the resource
 	// keeps answering on its old host.

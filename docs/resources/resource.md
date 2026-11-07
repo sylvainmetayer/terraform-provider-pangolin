@@ -28,6 +28,11 @@ resource "pangolin_resource" "web" {
   domain_id = data.pangolin_domains.all.domains[0].domain_id
   mode      = "http"
   sso       = false # public access, no Pangolin authentication
+
+  # Hash the client IP so a client keeps hitting the same target.
+  load_balancing_strategy = "hrw"
+  # Remote-User / Remote-Email headers to the backend (server default: true).
+  forward_identity_headers = false
 }
 
 # Wildcard HTTP resource (enterprise; the domain needs a wildcard
@@ -159,7 +164,9 @@ resource "pangolin_resource" "under_maintenance" {
 - `domain_id` (String) The domain ID to attach this resource to. Required for `http`, `ssh`, `rdp`, `vnc` and `inference`; leave unset for L4 modes.
 - `email_whitelist_enabled` (Boolean) Enable the email whitelist on this resource.
 - `enabled` (Boolean) Enable or disable the resource.
+- `forward_identity_headers` (Boolean) Send the authenticated user's identity to the backend in the `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and `Remote-User-Id` headers. The server default is `true`. HTTP resources only. Removing the attribute keeps the current value: set `true` to restore it.
 - `headers` (Attributes List) Static request headers injected on the upstream request - list of `{name, value}` objects. Only for `mode = "http"`. This attribute is authoritative: headers set outside Terraform (e.g. in the Pangolin UI) are removed on the next apply when the attribute is absent from the config, as are the ones it no longer lists. Removing the attribute, or setting it to `[]`, clears the headers on the server. Header values are sensitive. Cannot be marked Computed because the Go slice model type in the plugin framework does not carry an "unknown" sentinel. (see [below for nested schema](#nestedatt--headers))
+- `load_balancing_strategy` (String) How an HTTP resource spreads requests over its targets: `wrr` (weighted round robin, the server default), `p2c` (power of two choices), `hrw` (highest random weight, hashes the client IP) or `leasttime` (lowest response time). HTTP resources only. Removing the attribute keeps the current value.
 - `maintenance_estimated_time` (String) Free-form estimated end-of-maintenance timestamp / duration (surfaced on the maintenance page).
 - `maintenance_message` (String) Maintenance page body message.
 - `maintenance_mode_enabled` (Boolean) Serve a maintenance page (or reject the L4 connection) instead of proxying.
