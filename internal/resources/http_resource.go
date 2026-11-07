@@ -94,10 +94,13 @@ type HTTPResourceModel struct {
 	// 1.19+ read-only identity / policy backing.
 	ResourceGuid            types.String `tfsdk:"resource_guid"`
 	Wildcard                types.Bool   `tfsdk:"wildcard"`
+	MatchBaseDomain         types.Bool   `tfsdk:"match_base_domain"`
 	Health                  types.String `tfsdk:"health"`
 	ResourcePolicyID        types.Int64  `tfsdk:"resource_policy_id"`
 	DefaultResourcePolicyID types.Int64  `tfsdk:"default_resource_policy_id"`
 }
+
+var subdomainRegexp = regexp.MustCompile(`^(\*|(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*)$`)
 
 // NewHTTPResource returns a new resource factory.
 func NewHTTPResource() resource.Resource {
@@ -145,14 +148,15 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"subdomain": schema.StringAttribute{
 				Description: "The subdomain for the resource. Used by every mode except `tcp` / `udp`; " +
-					"ignored for L4 modes. Set to null to use the base domain.",
+					"ignored for L4 modes. Set to null to use the base domain. One or more dot-separated labels (`app`, `app.team`); " +
+					"an HTTP resource can also take a wildcard as its leftmost label (`*`, `*.apps`), an enterprise feature that needs a wildcard certificate on the domain.",
 				Optional: true,
 				Validators: []validator.String{
-					// RFC 1123 label: lowercase letters, digits, hyphens; cannot
-					// start or end with a hyphen; max 63 characters.
-					stringvalidator.RegexMatches(
-						regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`),
-						"must be a valid DNS label (lowercase letters, digits and hyphens; cannot start or end with a hyphen)",
+					// Dot-separated RFC 1123 labels (lowercase: the server lowercases,
+					// so an uppercase value would drift), optionally under a leading
+					// "*" wildcard, as Pangolin's subdomain and wildcard schemas allow.
+					stringvalidator.RegexMatches(subdomainRegexp,
+						"must be dot-separated DNS labels (lowercase letters, digits and hyphens; a label cannot start or end with a hyphen), optionally under a leading `*` wildcard (`*`, `*.apps`)",
 					),
 				},
 			},
@@ -427,6 +431,16 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"wildcard": schema.BoolAttribute{
 				Description: "Whether the resource matches a wildcard subdomain (1.19+).",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+					followSubdomain{},
+				},
+			},
+			"match_base_domain": schema.BoolAttribute{
+				Description: "For an HTTP resource on a wildcard subdomain (`subdomain = \"*.apps\"`): also serve the host the wildcard sits under, so `*.apps.example.com` also answers on `apps.example.com`. " +
+					"Requires Pangolin 1.26.0 or later (an older server refuses the field); the server refuses it on a non-wildcard subdomain and turns it off when the subdomain stops being a wildcard. Null when the server does not report it.",
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 					followSubdomain{},
@@ -770,6 +784,7 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 		v := plan.StickySession.ValueBool()
 		req.StickySession = &v
 	}
+	req.MatchBaseDomain = tfconv.BoolToPtr(plan.MatchBaseDomain)
 	if !plan.TLSServerName.IsUnknown() {
 		if plan.TLSServerName.IsNull() {
 			req.TLSServerName = nil
@@ -1057,6 +1072,7 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	// Read-only identity / policy backing.
 	m.ResourceGuid = types.StringValue(res.ResourceGuid)
 	m.Wildcard = types.BoolValue(res.Wildcard)
+	m.MatchBaseDomain = tfconv.BoolFromPtr(res.MatchBaseDomain)
 	if res.Health != "" {
 		m.Health = types.StringValue(res.Health)
 	} else {

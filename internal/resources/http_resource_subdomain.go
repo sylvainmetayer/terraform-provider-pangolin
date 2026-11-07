@@ -40,7 +40,8 @@ func (followSubdomain) PlanModifyString(ctx context.Context, req planmodifier.St
 }
 
 func (followSubdomain) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
-	if subdomainChanges(ctx, req.Plan, req.State) {
+	// A configured value (match_base_domain) is what gets sent: keep it.
+	if req.ConfigValue.IsNull() && subdomainChanges(ctx, req.Plan, req.State) {
 		resp.PlanValue = types.BoolUnknown()
 	}
 }

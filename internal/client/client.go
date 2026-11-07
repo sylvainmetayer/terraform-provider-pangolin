@@ -610,7 +610,9 @@ type Resource struct {
 	DomainID     string `json:"domainId"`
 	Protocol     string `json:"protocol,omitempty"`
 	Wildcard     bool   `json:"wildcard,omitempty"`
-	Health       string `json:"health,omitempty"`
+	// MatchBaseDomain is absent before Pangolin 1.26.0.
+	MatchBaseDomain *bool  `json:"matchBaseDomain"`
+	Health          string `json:"health,omitempty"`
 
 	// Mode / L7 vs L4 (1.19)
 	Mode           string `json:"mode,omitempty"`
@@ -1994,6 +1996,8 @@ type UpdateResourceRequest struct {
 	// subdomain; without it a new subdomain is stored but the resource
 	// keeps answering on its old host.
 	DomainID string `json:"domainId,omitempty"`
+	// 1.26+: older servers refuse the key, so it is only sent when set.
+	MatchBaseDomain *bool `json:"matchBaseDomain,omitempty"`
 
 	// 1.19+ additions - routing / auth. `enableProxy`,
 	// `proxyProtocol` and `proxyProtocolVersion` were probed on the

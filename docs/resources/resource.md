@@ -30,6 +30,17 @@ resource "pangolin_resource" "web" {
   sso       = false # public access, no Pangolin authentication
 }
 
+# Wildcard HTTP resource (enterprise; the domain needs a wildcard
+# certificate). match_base_domain (Pangolin 1.26.0+) also serves the
+# host under the wildcard: *.apps.example.com and apps.example.com.
+resource "pangolin_resource" "apps" {
+  name              = "apps"
+  subdomain         = "*.apps"
+  domain_id         = data.pangolin_domains.all.domains[0].domain_id
+  mode              = "http"
+  match_base_domain = true
+}
+
 # HTTP resource with 1.19+ options: injected headers, host-header
 # override, PROXY-protocol upstream, post-auth landing page.
 resource "pangolin_resource" "web_advanced" {
@@ -154,6 +165,7 @@ resource "pangolin_resource" "under_maintenance" {
 - `maintenance_mode_enabled` (Boolean) Serve a maintenance page (or reject the L4 connection) instead of proxying.
 - `maintenance_mode_type` (String) Maintenance type - free-form label surfaced on the maintenance page.
 - `maintenance_title` (String) Maintenance page title.
+- `match_base_domain` (Boolean) For an HTTP resource on a wildcard subdomain (`subdomain = "*.apps"`): also serve the host the wildcard sits under, so `*.apps.example.com` also answers on `apps.example.com`. Requires Pangolin 1.26.0 or later (an older server refuses the field); the server refuses it on a non-wildcard subdomain and turns it off when the subdomain stops being a wildcard. Null when the server does not report it.
 - `mode` (String) The resource mode. One of `http` (reverse proxy, default), `ssh`, `rdp` or `vnc` (browser-based access, Pangolin >= 1.20), `inference` (AI gateway endpoint, Pangolin >= 1.22; see `ai_provider_ids`), `tcp` or `udp` (raw L4). `ssh` / `rdp` / `vnc` / `inference` require `domain_id` and do not take `proxy_port`. Targets created for the resource inherit its mode. Changing this attribute forces replacement.
 - `pam_mode` (String) PAM (Pluggable Authentication Module) mode for SSH resources. One of `passthrough` or `push`. Only meaningful for `mode = "ssh"`.
 - `post_auth_path` (String) Landing path after a successful login (e.g. `/dashboard`).
@@ -168,7 +180,7 @@ resource "pangolin_resource" "under_maintenance" {
 - `ssl` (Boolean) Enable SSL towards the backend.
 - `sso` (Boolean) Enable Pangolin SSO authentication on this resource. Set to false to make the resource publicly accessible.
 - `sticky_session` (Boolean) Enable sticky sessions (persistent sessions) on this resource.
-- `subdomain` (String) The subdomain for the resource. Used by every mode except `tcp` / `udp`; ignored for L4 modes. Set to null to use the base domain.
+- `subdomain` (String) The subdomain for the resource. Used by every mode except `tcp` / `udp`; ignored for L4 modes. Set to null to use the base domain. One or more dot-separated labels (`app`, `app.team`); an HTTP resource can also take a wildcard as its leftmost label (`*`, `*.apps`), an enterprise feature that needs a wildcard certificate on the domain.
 - `tls_server_name` (String) TLS server name for the backend. Set to null to clear.
 
 ### Read-Only
