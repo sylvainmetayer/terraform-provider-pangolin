@@ -34,6 +34,10 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateOrgIDP", func(c *Client) error { _, err := c.CreateOrgIDP(ctx, "org", &CreateIDPRequest{}); return err }},
 		{"CreateDomain", func(c *Client) error { _, err := c.CreateDomain(ctx, "org", &CreateDomainRequest{}); return err }},
 		{"CreateAIModel", func(c *Client) error { _, err := c.CreateAIModel(ctx, 1, &AIModelRequest{}); return err }},
+		{"CreateSiteProvisioningKey", func(c *Client) error {
+			_, err := c.CreateSiteProvisioningKey(ctx, &CreateSiteProvisioningKeyRequest{})
+			return err
+		}},
 		{"CreateVirtualAPIKey", func(c *Client) error { _, err := c.CreateVirtualAPIKey(ctx, &VirtualAPIKeyRequest{}); return err }},
 		{"CreateAIBudget", func(c *Client) error { _, err := c.CreateAIBudget(ctx, &AIBudgetRequest{}); return err }},
 		{"CreateEventStreamingDestination", func(c *Client) error {
