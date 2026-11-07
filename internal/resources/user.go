@@ -70,10 +70,14 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"role_id": schema.Int64Attribute{
-				Description: "The role ID to assign to the user.",
+				Description: "The role ID given to the user at creation. Changing it replaces the user.",
 				Required:    true,
 				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.RequiresReplace(),
+					// An import of a user with several roles leaves it null: take
+					// the configured one without replacing the user.
+					int64planmodifier.RequiresReplaceIf(func(_ context.Context, req planmodifier.Int64Request, resp *int64planmodifier.RequiresReplaceIfFuncResponse) {
+						resp.RequiresReplace = !req.StateValue.IsNull()
+					}, "Replaces the user when the role changes.", "Replaces the user when the role changes."),
 				},
 			},
 			"email": schema.StringAttribute{
@@ -245,7 +249,9 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 
 	var state UserResourceModel
 	userToModel(user, &state)
-	if len(user.Roles) > 0 {
+	// With several roles, the one given at creation is unknown: leave it
+	// to the config.
+	if len(user.Roles) == 1 {
 		state.RoleID = types.Int64Value(int64(user.Roles[0].RoleID))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
