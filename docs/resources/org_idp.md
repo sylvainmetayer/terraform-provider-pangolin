@@ -65,7 +65,7 @@ output "oidc_redirect_url" {
 - `org_mapping` (String) Optional expression mapping a token claim to the org binding. Null when unset.
 - `role_mapping` (String) Optional expression mapping a token claim to a Pangolin role for this org. Null when unset.
 - `tags` (String) Optional tags associated with the IDP.
-- `variant` (String) OIDC variant - refines `type = oidc` to a provider family. One of `oidc` (generic, default), `google`, `azure`.
+- `variant` (String) OIDC variant - refines `type = oidc` to a provider family. One of `oidc` (generic, default), `google`, `azure`. The server cannot change it in place: changing it replaces the IdP.
 
 ### Read-Only
 

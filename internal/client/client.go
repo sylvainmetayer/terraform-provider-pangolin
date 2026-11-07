@@ -3409,6 +3409,28 @@ type CreateIDPRequest struct {
 	AutoProvision  bool   `json:"autoProvision,omitempty"`
 	Tags           string `json:"tags,omitempty"`
 	Variant        string `json:"variant,omitempty"`
+	// Org-scoped create only (POST /org/{org}/idp/oidc).
+	RoleMapping *string `json:"roleMapping,omitempty"`
+	OrgMapping  *string `json:"orgMapping,omitempty"`
+}
+
+// UpdateOrgIDPRequest is the payload of POST /org/{org}/idp/{id}/oidc.
+// The server schema is strict: it has no variant and rejects one.
+// AutoProvision is always sent so it can be turned off.
+type UpdateOrgIDPRequest struct {
+	Name           string  `json:"name,omitempty"`
+	ClientID       string  `json:"clientId,omitempty"`
+	ClientSecret   string  `json:"clientSecret,omitempty"`
+	AuthURL        string  `json:"authUrl,omitempty"`
+	TokenURL       string  `json:"tokenUrl,omitempty"`
+	IdentifierPath string  `json:"identifierPath,omitempty"`
+	EmailPath      string  `json:"emailPath,omitempty"`
+	NamePath       string  `json:"namePath,omitempty"`
+	Scopes         string  `json:"scopes,omitempty"`
+	AutoProvision  bool    `json:"autoProvision"`
+	Tags           string  `json:"tags,omitempty"`
+	RoleMapping    *string `json:"roleMapping,omitempty"`
+	OrgMapping     *string `json:"orgMapping,omitempty"`
 }
 
 // UpdateIDPRequest is the payload for updating an OIDC IDP.
@@ -3573,6 +3595,9 @@ type OrgIDPBindRow struct {
 	OrgID       string  `json:"orgId"`
 	RoleMapping *string `json:"roleMapping"`
 	OrgMapping  *string `json:"orgMapping"`
+	// AutoProvision is where org-scoped IdPs keep the flag; the server
+	// always stores false on the idp row itself.
+	AutoProvision *bool `json:"autoProvision"`
 }
 
 // CreateOrgIDP creates an OIDC IDP auto-bound to the given org. The
@@ -3625,7 +3650,7 @@ func (c *Client) GetOrgIDP(ctx context.Context, orgID string, idpID int) (*OrgID
 // body shape as [UpdateIDPRequest]; response is the trimmed
 // `{idpId}` only - fetch with [Client.GetOrgIDP] if the full payload
 // is needed.
-func (c *Client) UpdateOrgIDP(ctx context.Context, orgID string, idpID int, req *UpdateIDPRequest) error {
+func (c *Client) UpdateOrgIDP(ctx context.Context, orgID string, idpID int, req *UpdateOrgIDPRequest) error {
 	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/org/%s/idp/%d/oidc", orgID, idpID), req)
 	return err
 }

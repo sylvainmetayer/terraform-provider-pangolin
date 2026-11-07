@@ -152,6 +152,21 @@ func TestOrgIDPDetail_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+// The server keeps auto_provision of an org IdP on the idpOrg row and
+// always stores false on the idp row (Pangolin 1.26).
+func TestHydrateOrgIDP_AutoProvisionFromOrgRow(t *testing.T) {
+	raw := `{"idp":{"idpId":5,"autoProvision":false},"idpOidcConfig":{},"idpOrg":{"idpId":5,"orgId":"o","autoProvision":true}}`
+	var d client.OrgIDPDetail
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	state := OrgIDPResourceModel{}
+	hydrateOrgIDPState(&state, &d)
+	if !state.AutoProvision.ValueBool() {
+		t.Error("auto_provision must come from idpOrg when the server sends it")
+	}
+}
+
 func TestHydrateOrgIDPAfterWrite_KeepsPlannedSecret(t *testing.T) {
 	detail := &client.OrgIDPDetail{
 		IDP: client.IDP{IDPId: 5, Name: "g"},
