@@ -207,6 +207,7 @@ func (p *PangolinProvider) Resources(_ context.Context) []func() resource.Resour
 		resources.NewAIBudgetResource,
 		resources.NewEventStreamingDestinationResource,
 		resources.NewCustomDNSRecordResource,
+		resources.NewMTLSCertificateResource,
 		resources.NewClientRoleResource,
 		resources.NewSiteProvisioningKeyResource,
 		resources.NewAlertRuleResource,

@@ -122,6 +122,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_ai_budget` | Spending cap of the AI gateway, per provider, model, resource, role, key or organization |
 | `pangolin_event_streaming_destination` | Stream logs to an HTTP endpoint or an S3 bucket |
 | `pangolin_custom_dns_record` | DNS record served by Pangolin's nameservers for a delegated (`ns`) domain |
+| `pangolin_resource_mtls_certificate` | Trusted CA certificate for client-certificate (mTLS) authentication on a resource or a resource policy |
 
 ## Data Sources
 
