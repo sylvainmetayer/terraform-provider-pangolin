@@ -10,6 +10,11 @@ resource "pangolin_resource" "web" {
   domain_id = data.pangolin_domains.all.domains[0].domain_id
   mode      = "http"
   sso       = false # public access, no Pangolin authentication
+
+  # Hash the client IP so a client keeps hitting the same target.
+  load_balancing_strategy = "hrw"
+  # Remote-User / Remote-Email headers to the backend (server default: true).
+  forward_identity_headers = false
 }
 
 # Wildcard HTTP resource (enterprise; the domain needs a wildcard

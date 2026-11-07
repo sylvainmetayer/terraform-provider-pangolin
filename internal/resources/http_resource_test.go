@@ -842,3 +842,17 @@ func TestSubdomainRegexp(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildHTTPResourceUpdateRequestLBAndIdentity(t *testing.T) {
+	plan := HTTPResourceModel{Name: types.StringValue("r"), LoadBalancingStrategy: types.StringUnknown(), ForwardIdentityHeaders: types.BoolUnknown()}
+	req := buildHTTPResourceUpdateRequest(plan)
+	if req.LoadBalancingStrategy != nil || req.ForwardIdentityHeaders != nil {
+		t.Fatal("unknown values sent")
+	}
+	plan.LoadBalancingStrategy = types.StringValue("hrw")
+	plan.ForwardIdentityHeaders = types.BoolValue(false)
+	req = buildHTTPResourceUpdateRequest(plan)
+	if req.LoadBalancingStrategy == nil || *req.LoadBalancingStrategy != "hrw" || req.ForwardIdentityHeaders == nil || *req.ForwardIdentityHeaders {
+		t.Fatalf("not sent: %+v", req)
+	}
+}

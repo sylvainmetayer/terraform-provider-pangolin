@@ -46,21 +46,23 @@ type ResourceHeaderModel struct {
 
 // HTTPResourceModel describes the resource data model.
 type HTTPResourceModel struct {
-	ID                    types.Int64  `tfsdk:"id"`
-	NiceID                types.String `tfsdk:"nice_id"`
-	Name                  types.String `tfsdk:"name"`
-	Subdomain             types.String `tfsdk:"subdomain"`
-	FullDomain            types.String `tfsdk:"full_domain"`
-	DomainID              types.String `tfsdk:"domain_id"`
-	Protocol              types.String `tfsdk:"protocol"`
-	SSO                   types.Bool   `tfsdk:"sso"`
-	SSL                   types.Bool   `tfsdk:"ssl"`
-	Enabled               types.Bool   `tfsdk:"enabled"`
-	BlockAccess           types.Bool   `tfsdk:"block_access"`
-	EmailWhitelistEnabled types.Bool   `tfsdk:"email_whitelist_enabled"`
-	ApplyRules            types.Bool   `tfsdk:"apply_rules"`
-	StickySession         types.Bool   `tfsdk:"sticky_session"`
-	TLSServerName         types.String `tfsdk:"tls_server_name"`
+	ID                     types.Int64  `tfsdk:"id"`
+	NiceID                 types.String `tfsdk:"nice_id"`
+	Name                   types.String `tfsdk:"name"`
+	Subdomain              types.String `tfsdk:"subdomain"`
+	FullDomain             types.String `tfsdk:"full_domain"`
+	DomainID               types.String `tfsdk:"domain_id"`
+	Protocol               types.String `tfsdk:"protocol"`
+	SSO                    types.Bool   `tfsdk:"sso"`
+	SSL                    types.Bool   `tfsdk:"ssl"`
+	Enabled                types.Bool   `tfsdk:"enabled"`
+	BlockAccess            types.Bool   `tfsdk:"block_access"`
+	EmailWhitelistEnabled  types.Bool   `tfsdk:"email_whitelist_enabled"`
+	ApplyRules             types.Bool   `tfsdk:"apply_rules"`
+	StickySession          types.Bool   `tfsdk:"sticky_session"`
+	LoadBalancingStrategy  types.String `tfsdk:"load_balancing_strategy"`
+	ForwardIdentityHeaders types.Bool   `tfsdk:"forward_identity_headers"`
+	TLSServerName          types.String `tfsdk:"tls_server_name"`
 
 	// 1.19+ mode / PAM / auth-daemon (create-only).
 	Mode           types.String `tfsdk:"mode"`
@@ -293,6 +295,25 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Enable sticky sessions (persistent sessions) on this resource.",
 				Optional:    true,
 				Computed:    true,
+			},
+			"load_balancing_strategy": schema.StringAttribute{
+				Description: "How an HTTP resource spreads requests over its targets: `wrr` (weighted round robin, the server default), `p2c` (power of two choices), `hrw` (highest random weight, hashes the client IP) or `leasttime` (lowest response time).",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.String{
+					stringvalidator.OneOf("wrr", "p2c", "hrw", "leasttime"),
+				},
+			},
+			"forward_identity_headers": schema.BoolAttribute{
+				Description: "Send the authenticated user's identity to the backend in the `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and `Remote-User-Id` headers. The server default is `true`.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"tls_server_name": schema.StringAttribute{
 				Description: "TLS server name for the backend. Set to null to clear.",
@@ -808,6 +829,8 @@ func buildHTTPResourceUpdateRequest(plan HTTPResourceModel) *client.UpdateResour
 		v := plan.StickySession.ValueBool()
 		req.StickySession = &v
 	}
+	req.LoadBalancingStrategy = tfconv.StringToPtr(plan.LoadBalancingStrategy)
+	req.ForwardIdentityHeaders = tfconv.BoolToPtr(plan.ForwardIdentityHeaders)
 	req.MatchBaseDomain = tfconv.BoolToPtr(plan.MatchBaseDomain)
 	if !plan.TLSServerName.IsUnknown() {
 		if plan.TLSServerName.IsNull() {
@@ -1050,6 +1073,8 @@ func applyHTTPResourceResponse(m HTTPResourceModel, res *client.Resource) HTTPRe
 	m.EmailWhitelistEnabled = types.BoolValue(res.EmailWhitelistEnabled)
 	m.ApplyRules = types.BoolValue(res.ApplyRules)
 	m.StickySession = types.BoolValue(res.StickySession)
+	m.LoadBalancingStrategy = tfconv.StringFromPtr(res.LoadBalancingStrategy)
+	m.ForwardIdentityHeaders = tfconv.BoolFromPtr(res.ForwardIdentityHeaders)
 	if res.TLSServerName != nil {
 		m.TLSServerName = types.StringValue(*res.TLSServerName)
 	} else {
