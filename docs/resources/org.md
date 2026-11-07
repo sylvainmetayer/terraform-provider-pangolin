@@ -60,9 +60,9 @@ output "ssh_ca_public_key" {
 - `log_retention_days_action` (Number) Retention in days for the action audit log. `0` disables retention. Requires an active enterprise subscription on Pangolin Cloud.
 - `log_retention_days_connection` (Number) Retention in days for the connection audit log. `0` disables retention. Requires an active enterprise subscription on Pangolin Cloud.
 - `log_retention_days_request` (Number) Retention in days for the request audit log (proxy traffic). `0` disables retention.
-- `max_session_length_hours` (Number) Maximum session length in hours before users must re-authenticate. Unset means no enforced cap (server default).
-- `password_expiry_days` (Number) Force users to rotate their password after this many days. Unset means no enforced rotation.
-- `require_two_factor` (Boolean) Force two-factor authentication for all members of the organization. Unset means inherit the server default.
+- `max_session_length_hours` (Number) Maximum session length in hours before users must re-authenticate. Unset means no enforced cap (server default). Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `password_expiry_days` (Number) Force users to rotate their password after this many days. Unset means no enforced rotation. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `require_two_factor` (Boolean) Force two-factor authentication for all members of the organization. Unset means inherit the server default. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
 
 ### Read-Only
 

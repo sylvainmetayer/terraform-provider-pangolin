@@ -23,7 +23,7 @@ func TestRoleToModel_Nominal(t *testing.T) {
 		OrgName:               "Acme",
 		RequireDeviceApproval: true,
 		AllowSSH:              boolPtr(true),
-		SSHSudoMode:           "restricted",
+		SSHSudoMode:           "commands",
 		SSHSudoCommandsRaw:    `["sudo","wheel"]`,
 		SSHCreateHomeDir:      true,
 		SSHUnixGroupsRaw:      `["docker","admin"]`,
@@ -53,7 +53,7 @@ func TestRoleToModel_Nominal(t *testing.T) {
 	if !m.AllowSSH.ValueBool() {
 		t.Errorf("AllowSSH should reflect server value true")
 	}
-	if m.SSHSudoMode.ValueString() != "restricted" {
+	if m.SSHSudoMode.ValueString() != "commands" {
 		t.Errorf("SSHSudoMode = %q", m.SSHSudoMode.ValueString())
 	}
 	if !m.SSHCreateHomeDir.ValueBool() {
@@ -267,7 +267,7 @@ func TestRoleResource_RoundTripPreservesFields(t *testing.T) {
 		Description:           types.StringValue("engineers"),
 		RequireDeviceApproval: types.BoolValue(true),
 		AllowSSH:              types.BoolValue(true),
-		SSHSudoMode:           types.StringValue("restricted"),
+		SSHSudoMode:           types.StringValue("commands"),
 		SSHCreateHomeDir:      types.BoolValue(true),
 		SSHSudoCommands:       sudoList,
 		SSHUnixGroups:         groupsList,
@@ -308,7 +308,7 @@ func TestRoleResource_RoundTripPreservesFields(t *testing.T) {
 	if !back.AllowSSH.ValueBool() {
 		t.Errorf("AllowSSH lost")
 	}
-	if back.SSHSudoMode.ValueString() != "restricted" {
+	if back.SSHSudoMode.ValueString() != "commands" {
 		t.Errorf("SSHSudoMode lost")
 	}
 	var sudo []string

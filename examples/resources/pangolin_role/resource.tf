@@ -6,7 +6,7 @@ resource "pangolin_role" "developers" {
   # with restricted sudo and explicit Unix groups on the target host.
   allow_ssh           = true
   ssh_create_home_dir = true
-  ssh_sudo_mode       = "restricted"
+  ssh_sudo_mode       = "commands"
   ssh_sudo_commands = [
     "/usr/bin/systemctl restart nginx",
     "/usr/bin/journalctl",

@@ -114,6 +114,15 @@ func (r *IDPOrgResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// An unset mapping is unknown in the plan: read what the server stored.
+	policy, err := r.client.GetIDPOrgPolicy(ctx, int(plan.IDPId.ValueInt64()), plan.OrgID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read IDP org policy", err.Error())
+		return
+	}
+	plan.RoleMapping = types.StringValue(policy.RoleMapping)
+	plan.OrgMapping = types.StringValue(policy.OrgMapping)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -155,6 +164,15 @@ func (r *IDPOrgResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resp.Diagnostics.AddError("Failed to update IDP org policy", err.Error())
 		return
 	}
+
+	// An unset mapping is unknown in the plan: read what the server stored.
+	policy, err := r.client.GetIDPOrgPolicy(ctx, int(plan.IDPId.ValueInt64()), plan.OrgID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read IDP org policy", err.Error())
+		return
+	}
+	plan.RoleMapping = types.StringValue(policy.RoleMapping)
+	plan.OrgMapping = types.StringValue(policy.OrgMapping)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

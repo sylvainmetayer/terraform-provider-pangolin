@@ -107,7 +107,7 @@ func (r *OrgResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 			},
 			// Security policies
 			"require_two_factor": schema.BoolAttribute{
-				Description: "Force two-factor authentication for all members of the organization. Unset means inherit the server default.",
+				Description: "Force two-factor authentication for all members of the organization. Unset means inherit the server default. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
@@ -115,7 +115,7 @@ func (r *OrgResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				},
 			},
 			"max_session_length_hours": schema.Int64Attribute{
-				Description: "Maximum session length in hours before users must re-authenticate. Unset means no enforced cap (server default).",
+				Description: "Maximum session length in hours before users must re-authenticate. Unset means no enforced cap (server default). Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Int64{
@@ -126,7 +126,7 @@ func (r *OrgResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				},
 			},
 			"password_expiry_days": schema.Int64Attribute{
-				Description: "Force users to rotate their password after this many days. Unset means no enforced rotation.",
+				Description: "Force users to rotate their password after this many days. Unset means no enforced rotation. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Int64{

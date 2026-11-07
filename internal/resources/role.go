@@ -91,7 +91,7 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			// SSH bastion
 			"require_device_approval": schema.BoolAttribute{
-				Description: "Require an administrator to approve each new device before its user can use this role.",
+				Description: "Require an administrator to approve each new device before its user can use this role. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
@@ -108,18 +108,18 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"ssh_sudo_mode": schema.StringAttribute{
 				Description: "How sudo is gated for SSH sessions opened by members of this role. " +
-					"`none` disables sudo, `full` allows any command, `restricted` allows only `ssh_sudo_commands`.",
+					"`none` disables sudo, `full` allows any command, `commands` allows only `ssh_sudo_commands`. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional: true,
 				Computed: true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("none", "full", "restricted"),
+					stringvalidator.OneOf("none", "full", "commands"),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"ssh_sudo_commands": schema.ListAttribute{
-				Description: "List of sudo command patterns allowed when `ssh_sudo_mode = \"restricted\"`. Ignored otherwise.",
+				Description: "List of sudo command patterns allowed when `ssh_sudo_mode = \"commands\"`. Ignored otherwise. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Computed:    true,
@@ -128,7 +128,7 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"ssh_create_home_dir": schema.BoolAttribute{
-				Description: "Whether to create the user's home directory on the host when they first log in.",
+				Description: "Whether to create the user's home directory on the host when they first log in. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
@@ -136,7 +136,7 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"ssh_unix_groups": schema.ListAttribute{
-				Description: "Unix groups added to the user account on the host when they log in via SSH.",
+				Description: "Unix groups added to the user account on the host when they log in via SSH. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Computed:    true,
