@@ -1990,6 +1990,10 @@ type UpdateResourceRequest struct {
 	ApplyRules            *bool   `json:"applyRules,omitempty"`
 	StickySession         *bool   `json:"stickySession,omitempty"`
 	TLSServerName         *string `json:"tlsServerName,omitempty"`
+	// DomainID makes the server rebuild fullDomain (and wildcard) from the
+	// subdomain; without it a new subdomain is stored but the resource
+	// keeps answering on its old host.
+	DomainID string `json:"domainId,omitempty"`
 
 	// 1.19+ additions - routing / auth. `enableProxy`,
 	// `proxyProtocol` and `proxyProtocolVersion` were probed on the
