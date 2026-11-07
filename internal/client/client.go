@@ -3056,6 +3056,10 @@ type Org struct {
 	SettingsLogRetentionDaysAccess     int `json:"settingsLogRetentionDaysAccess"`
 	SettingsLogRetentionDaysAction     int `json:"settingsLogRetentionDaysAction"`
 	SettingsLogRetentionDaysConnection int `json:"settingsLogRetentionDaysConnection"`
+	// Pointers: a server older than the field does not return it.
+	SettingsLogRetentionDaysAISessions *int  `json:"settingsLogRetentionDaysAISessions"`
+	SettingsLogRetentionDaysSsh        *int  `json:"settingsLogRetentionDaysSsh"`
+	SettingsEnableGlobalNewtAutoUpdate *bool `json:"settingsEnableGlobalNewtAutoUpdate"`
 
 	// SSH CA - used to sign certificates for SSH bastion access. The
 	// private key is returned in clear by the API; treat as secret.
@@ -3119,6 +3123,9 @@ type UpdateOrgRequest struct {
 	SettingsLogRetentionDaysAccess     *int   `json:"settingsLogRetentionDaysAccess,omitempty"`
 	SettingsLogRetentionDaysAction     *int   `json:"settingsLogRetentionDaysAction,omitempty"`
 	SettingsLogRetentionDaysConnection *int   `json:"settingsLogRetentionDaysConnection,omitempty"`
+	SettingsLogRetentionDaysAISessions *int   `json:"settingsLogRetentionDaysAISessions,omitempty"`
+	SettingsLogRetentionDaysSsh        *int   `json:"settingsLogRetentionDaysSsh,omitempty"`
+	SettingsEnableGlobalNewtAutoUpdate *bool  `json:"settingsEnableGlobalNewtAutoUpdate,omitempty"`
 }
 
 // UpdateOrg updates an organization by ID.

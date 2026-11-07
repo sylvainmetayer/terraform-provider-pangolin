@@ -12,10 +12,15 @@ resource "pangolin_org" "example" {
   # Audit log retention (days). 0 disables a stream.
   # The access / action / connection streams require an active
   # enterprise subscription on Pangolin Cloud.
-  log_retention_days_request    = 30
-  log_retention_days_access     = 90
-  log_retention_days_action     = 90
-  log_retention_days_connection = 30
+  log_retention_days_request     = 30
+  log_retention_days_access      = 90
+  log_retention_days_action      = 90
+  log_retention_days_connection  = 30
+  log_retention_days_ai_sessions = 7
+  log_retention_days_ssh         = 90 # Pangolin 1.26.0+
+
+  # Newt site connectors update themselves (enterprise).
+  newt_auto_update = true
 }
 
 # The SSH CA keypair is returned by the API and stored in state.
