@@ -170,11 +170,13 @@ func (r *OrgIDPResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"variant": schema.StringAttribute{
-				Description: "OIDC variant - refines `type = oidc` to a provider family. One of `oidc` (generic, default), `google`, `azure`.",
-				Optional:    true,
-				Computed:    true,
+				Description: "OIDC variant - refines `type = oidc` to a provider family. One of `oidc` (generic, default), `google`, `azure`. " +
+					"The server cannot change it in place: changing it replaces the IdP.",
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
 					stringvalidator.OneOf("oidc", "google", "azure"),
@@ -239,6 +241,8 @@ func (r *OrgIDPResource) Create(ctx context.Context, req resource.CreateRequest,
 		AutoProvision:  plan.AutoProvision.ValueBool(),
 		Tags:           plan.Tags.ValueString(),
 		Variant:        plan.Variant.ValueString(),
+		RoleMapping:    knownStringPtr(plan.RoleMapping),
+		OrgMapping:     knownStringPtr(plan.OrgMapping),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create org IDP", err.Error())
@@ -287,7 +291,7 @@ func (r *OrgIDPResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	err := r.client.UpdateOrgIDP(ctx, plan.OrgID.ValueString(), int(plan.ID.ValueInt64()), &client.UpdateIDPRequest{
+	err := r.client.UpdateOrgIDP(ctx, plan.OrgID.ValueString(), int(plan.ID.ValueInt64()), &client.UpdateOrgIDPRequest{
 		Name:           plan.Name.ValueString(),
 		ClientID:       plan.ClientID.ValueString(),
 		ClientSecret:   plan.ClientSecret.ValueString(),
@@ -299,7 +303,8 @@ func (r *OrgIDPResource) Update(ctx context.Context, req resource.UpdateRequest,
 		Scopes:         plan.Scopes.ValueString(),
 		AutoProvision:  plan.AutoProvision.ValueBool(),
 		Tags:           plan.Tags.ValueString(),
-		Variant:        plan.Variant.ValueString(),
+		RoleMapping:    knownStringPtr(plan.RoleMapping),
+		OrgMapping:     knownStringPtr(plan.OrgMapping),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update org IDP", err.Error())
@@ -382,6 +387,9 @@ func hydrateOrgIDPAfterWrite(plan *OrgIDPResourceModel, detail *client.OrgIDPDet
 func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail) {
 	state.Name = types.StringValue(detail.IDP.Name)
 	state.AutoProvision = types.BoolValue(detail.IDP.AutoProvision)
+	if detail.IDPOrg.AutoProvision != nil {
+		state.AutoProvision = types.BoolValue(*detail.IDPOrg.AutoProvision)
+	}
 	state.Tags = types.StringValue(detail.IDP.Tags)
 	state.Variant = types.StringValue(resolveIDPVariant(state.Variant, &detail.IDP, &detail.IDPOidcConfig))
 	state.ClientID = types.StringValue(detail.IDPOidcConfig.ClientID)

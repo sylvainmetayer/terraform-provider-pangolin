@@ -761,6 +761,14 @@ func knownString(v types.String) string {
 	return v.ValueString()
 }
 
+// knownStringPtr returns the value of a known string, nil when null or unknown.
+func knownStringPtr(v types.String) *string {
+	if v.IsUnknown() {
+		return nil
+	}
+	return v.ValueStringPointer()
+}
+
 // knownInt64 returns the value of a known number, 0 otherwise.
 func knownInt64(v types.Int64) int64 {
 	if v.IsNull() || v.IsUnknown() {

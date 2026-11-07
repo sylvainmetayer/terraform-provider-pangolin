@@ -3830,11 +3830,18 @@ func TestUpdateOrgIDP_PathAndBody(t *testing.T) {
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{"idpId": 2})
 	})
-	if err := c.UpdateOrgIDP(context.Background(), "test-org", 2, &UpdateIDPRequest{Name: "renamed"}); err != nil {
+	if err := c.UpdateOrgIDP(context.Background(), "test-org", 2, &UpdateOrgIDPRequest{Name: "renamed"}); err != nil {
 		t.Fatalf("UpdateOrgIDP: %v", err)
 	}
 	if string(gotBody["name"]) != `"renamed"` {
 		t.Errorf("body name = %s", gotBody["name"])
+	}
+	// The server schema is strict (no variant) and false must be sent to turn auto-provision off.
+	if _, ok := gotBody["variant"]; ok {
+		t.Error("variant must not be sent on an org IdP update")
+	}
+	if string(gotBody["autoProvision"]) != "false" {
+		t.Errorf("autoProvision = %s, want false", gotBody["autoProvision"])
 	}
 }
 
