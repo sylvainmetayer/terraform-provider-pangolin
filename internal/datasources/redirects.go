@@ -3,8 +3,10 @@ package datasources
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
@@ -68,6 +70,7 @@ func (d *RedirectsDataSource) Schema(_ context.Context, _ datasource.SchemaReque
 			"type": schema.StringAttribute{
 				Description: "Only return `permanent` (308) or `temporary` (307) redirects.",
 				Optional:    true,
+				Validators:  []validator.String{stringvalidator.OneOf("permanent", "temporary")},
 			},
 			"enabled": schema.BoolAttribute{
 				Description: "Only return enabled (`true`) or disabled (`false`) redirects.",
