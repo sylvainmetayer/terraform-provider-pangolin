@@ -3,20 +3,26 @@
 page_title: "pangolin_user Resource - pangolin"
 subcategory: ""
 description: |-
-  Manages a user within a Pangolin organization. Typically used for OIDC-provisioned users.
+  Manages an OIDC user of a Pangolin organization. The identity provider (idp_id) must be linked to the org, for example with pangolin_idp_org.
 ---
 
 # pangolin_user (Resource)
 
-Manages a user within a Pangolin organization. Typically used for OIDC-provisioned users.
+Manages an OIDC user of a Pangolin organization. The identity provider (`idp_id`) must be linked to the org, for example with `pangolin_idp_org`.
 
 ## Example Usage
 
 ```terraform
-resource "pangolin_user" "example" {
+# OIDC user, signing in through an identity provider linked to the org.
+resource "pangolin_user" "alice" {
+  username = "alice"
   email    = "alice@example.com"
-  password = var.alice_password
   name     = "Alice"
+  idp_id   = pangolin_idp.authentik.id
+  role_id  = pangolin_role.developers.id
+
+  # The IdP must be linked to the org before users can be added to it.
+  depends_on = [pangolin_idp_org.authentik]
 }
 ```
 
@@ -32,6 +38,7 @@ resource "pangolin_user" "example" {
 
 - `auto_provisioned` (Boolean) Whether the user was auto-provisioned.
 - `email` (String) The user email address.
+- `idp_id` (Number) ID of the identity provider the user signs in with. Required for `oidc` users, the only type the server accepts.
 - `name` (String) The display name of the user.
 - `type` (String) The user type: 'oidc' or 'internal'. Defaults to 'oidc'.
 

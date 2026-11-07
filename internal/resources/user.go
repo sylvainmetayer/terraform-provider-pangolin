@@ -34,6 +34,7 @@ type UserResourceModel struct {
 	Email           types.String `tfsdk:"email"`
 	Name            types.String `tfsdk:"name"`
 	Type            types.String `tfsdk:"type"`
+	IdpID           types.Int64  `tfsdk:"idp_id"`
 	AutoProvisioned types.Bool   `tfsdk:"auto_provisioned"`
 }
 
@@ -48,7 +49,7 @@ func (r *UserResource) Metadata(_ context.Context, req resource.MetadataRequest,
 
 func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a user within a Pangolin organization. Typically used for OIDC-provisioned users.",
+		Description: "Manages an OIDC user of a Pangolin organization. The identity provider (`idp_id`) must be linked to the org, for example with `pangolin_idp_org`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The user ID.",
@@ -99,6 +100,15 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			"idp_id": schema.Int64Attribute{
+				Description: "ID of the identity provider the user signs in with. Required for `oidc` users, the only type the server accepts.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+					int64planmodifier.RequiresReplace(),
+				},
+			},
 			"auto_provisioned": schema.BoolAttribute{
 				Description: "Whether the user was auto-provisioned.",
 				Optional:    true,
@@ -135,21 +145,26 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		userType = "oidc"
 	}
 
-	user, err := r.client.CreateUser(ctx, &client.CreateUserRequest{
+	err := r.client.CreateUser(ctx, &client.CreateUserRequest{
 		Username: plan.Username.ValueString(),
 		RoleID:   int(plan.RoleID.ValueInt64()),
 		Email:    plan.Email.ValueString(),
 		Name:     plan.Name.ValueString(),
 		Type:     userType,
+		IdpID:    int(plan.IdpID.ValueInt64()),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create user", err.Error())
 		return
 	}
 
-	plan.ID = types.StringValue(user.ID)
-	plan.Email = types.StringValue(user.Email)
-	plan.Type = types.StringValue(userType)
+	// The create answers with an empty object: find the new user's ID.
+	user, err := r.client.GetUserByUsername(ctx, r.client.OrgID, plan.Username.ValueString(), int(plan.IdpID.ValueInt64()))
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read the created user", err.Error())
+		return
+	}
+	userToModel(user, &plan)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -171,7 +186,7 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	state.Email = types.StringValue(user.Email)
+	userToModel(user, &state)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -215,8 +230,27 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &UserResourceModel{
-		ID:    types.StringValue(user.ID),
-		Email: types.StringValue(user.Email),
-	})...)
+	var state UserResourceModel
+	userToModel(user, &state)
+	if len(user.Roles) > 0 {
+		state.RoleID = types.Int64Value(int64(user.Roles[0].RoleID))
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// userToModel copies the server's view of a user onto the model. The
+// role is left alone: role_id is the role given at creation, and other
+// roles come from pangolin_user_role.
+func userToModel(u *client.UserByUsernameResponse, m *UserResourceModel) {
+	m.ID = types.StringValue(u.UserID)
+	m.Username = types.StringValue(u.Username)
+	m.Email = types.StringPointerValue(u.Email)
+	m.Name = types.StringPointerValue(u.Name)
+	m.Type = types.StringValue(u.Type)
+	m.AutoProvisioned = types.BoolValue(u.AutoProvisioned)
+	if u.IdpID != nil {
+		m.IdpID = types.Int64Value(int64(*u.IdpID))
+	} else {
+		m.IdpID = types.Int64Null()
+	}
 }

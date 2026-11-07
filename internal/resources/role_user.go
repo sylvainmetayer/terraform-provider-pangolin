@@ -116,7 +116,8 @@ func (r *RoleUserResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	users, err := r.client.ListRoleUsers(ctx, roleID)
+	// No endpoint lists a role's users; read the user's roles instead.
+	has, err := r.client.UserHasRole(ctx, state.UserID.ValueString(), roleID)
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			resp.State.RemoveResource(ctx)
@@ -125,16 +126,12 @@ func (r *RoleUserResource) Read(ctx context.Context, req resource.ReadRequest, r
 		resp.Diagnostics.AddError("Failed to read role users", err.Error())
 		return
 	}
-
-	for _, uid := range users {
-		if uid == state.UserID.ValueString() {
-			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-			return
-		}
+	if !has {
+		// Association no longer exists - remove from state.
+		resp.State.RemoveResource(ctx)
+		return
 	}
-
-	// Association no longer exists - remove from state.
-	resp.State.RemoveResource(ctx)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *RoleUserResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -154,9 +151,16 @@ func (r *RoleUserResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	if err := r.client.RemoveUserFromRole(ctx, roleID, state.UserID.ValueString()); err != nil {
+	// No /role/{id}/remove route exists; detach the role from the user.
+	err = r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), roleID)
+	switch {
+	case err == nil, errors.Is(err, client.ErrNotFound):
+	case strings.Contains(err.Error(), "at least one role"):
+		resp.Diagnostics.AddWarning("User keeps the role",
+			"Pangolin requires every user to hold at least one role, and this is the user's last one. "+
+				"The assignment is dropped from the state but stays on the server.")
+	default:
 		resp.Diagnostics.AddError("Failed to remove user from role", err.Error())
-		return
 	}
 }
 
