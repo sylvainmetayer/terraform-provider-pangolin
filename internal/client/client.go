@@ -1971,17 +1971,29 @@ func (c *Client) UpdateSite(ctx context.Context, siteID int, req *UpdateSiteRequ
 	return &site, nil
 }
 
-// ReKeySite sets a new Newt secret on a site. The server disconnects the running
-// Newt (disconnect defaults to true), so the old secret stops working at once.
-func (c *Client) ReKeySite(ctx context.Context, siteID int, secret string) error {
-	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-site-secret", siteID), map[string]any{"type": "newt", "secret": secret})
+// ReKeySite sets a new Newt secret on a site. With disconnect, the server
+// terminates the running Newt, so the old secret stops working at once;
+// without it the running tunnel stays up and the new secret is needed at
+// the next reconnect.
+func (c *Client) ReKeySite(ctx context.Context, siteID int, secret string, disconnect bool) error {
+	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-site-secret", siteID), reKeyBody(map[string]any{"type": "newt", "secret": secret}, disconnect))
 	return err
 }
 
-// ReKeyClient sets a new OLM secret on a machine client and disconnects the olm.
-func (c *Client) ReKeyClient(ctx context.Context, clientID int, secret string) error {
-	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-client-secret", clientID), map[string]any{"secret": secret})
+// ReKeyClient sets a new OLM secret on a machine client, with the same
+// disconnect choice as ReKeySite.
+func (c *Client) ReKeyClient(ctx context.Context, clientID int, secret string, disconnect bool) error {
+	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-client-secret", clientID), reKeyBody(map[string]any{"secret": secret}, disconnect))
 	return err
+}
+
+// reKeyBody adds disconnect only when false: true is the server default,
+// so the body stays what it was before the option.
+func reKeyBody(body map[string]any, disconnect bool) map[string]any {
+	if !disconnect {
+		body["disconnect"] = false
+	}
+	return body
 }
 
 // UpdateResourceRequest is the payload for updating a Pangolin
