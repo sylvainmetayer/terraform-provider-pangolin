@@ -38,8 +38,8 @@ resource "pangolin_user" "alice" {
 ### Optional
 
 - `auto_provisioned` (Boolean) Whether the user was auto-provisioned.
-- `email` (String) The user email address. The server cannot change it: a new value replaces the user.
-- `name` (String) The display name of the user. The server cannot change it: a new value replaces the user.
+- `email` (String) The user email address. Set when the user is created: Pangolin has no API to change it.
+- `name` (String) The display name of the user. Set when the user is created: Pangolin has no API to change it.
 - `type` (String) The user type: 'oidc' or 'internal'. Defaults to 'oidc'.
 
 ### Read-Only

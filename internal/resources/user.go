@@ -77,24 +77,21 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"email": schema.StringAttribute{
-				Description: "The user email address. The server cannot change it: a new value replaces the user.",
+				Description: "The user email address. Set when the user is created: Pangolin has no API to change it.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
-					// The server lowercases the email: a case change is not a new address.
-					stringplanmodifier.RequiresReplaceIf(func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
-						resp.RequiresReplace = !strings.EqualFold(req.StateValue.ValueString(), req.PlanValue.ValueString())
-					}, "Replaces the user when the email changes other than by case.", "Replaces the user when the email changes other than by case."),
+					createOnlyString{},
 				},
 			},
 			"name": schema.StringAttribute{
-				Description: "The display name of the user. The server cannot change it: a new value replaces the user.",
+				Description: "The display name of the user. Set when the user is created: Pangolin has no API to change it.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
-					stringplanmodifier.RequiresReplace(),
+					createOnlyString{},
 				},
 			},
 			"type": schema.StringAttribute{
@@ -260,11 +257,15 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 func userToModel(u *client.UserByUsernameResponse, m *UserResourceModel) {
 	m.ID = types.StringValue(u.UserID)
 	m.Username = types.StringValue(u.Username)
-	// The server lowercases the email: keep the configured spelling.
-	if u.Email == nil || !strings.EqualFold(m.Email.ValueString(), *u.Email) {
+	// Name and email are create-time inputs: keep a configured value (the
+	// server lowercases the email, and keeps the old name of a user that
+	// already existed), fill them only when unset or imported.
+	if m.Email.IsNull() || m.Email.IsUnknown() {
 		m.Email = types.StringPointerValue(u.Email)
 	}
-	m.Name = types.StringPointerValue(u.Name)
+	if m.Name.IsNull() || m.Name.IsUnknown() {
+		m.Name = types.StringPointerValue(u.Name)
+	}
 	m.Type = types.StringValue(u.Type)
 	m.AutoProvisioned = types.BoolValue(u.AutoProvisioned)
 	if u.IdpID != nil {
@@ -272,4 +273,24 @@ func userToModel(u *client.UserByUsernameResponse, m *UserResourceModel) {
 	} else {
 		m.IdpID = types.Int64Null()
 	}
+}
+
+// createOnlyString refuses a change to a value the server cannot update.
+// Replacing the user would not help: removing a user only drops it from
+// the org, and adding it back keeps its old name and email.
+type createOnlyString struct{}
+
+func (createOnlyString) Description(context.Context) string {
+	return "Refuses a change after creation."
+}
+
+func (m createOnlyString) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
+
+func (createOnlyString) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() || req.PlanValue.IsNull() ||
+		strings.EqualFold(req.StateValue.ValueString(), req.PlanValue.ValueString()) {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Cannot change a user's "+req.Path.String(),
+		"Pangolin has no API to change it once the user exists. Put back "+req.StateValue.String()+", or change it in the identity provider.")
 }
