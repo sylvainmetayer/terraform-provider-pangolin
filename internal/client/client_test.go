@@ -3047,6 +3047,27 @@ func TestGetOLMClient_DecodesArchivedAndBlocked(t *testing.T) {
 	}
 }
 
+func TestReKey_SendsNewSecret(t *testing.T) {
+	var gotPath, gotBody string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotBody = r.Method+" "+r.URL.Path, string(b)
+		writeEnvelope(t, w, http.StatusOK, map[string]any{})
+	})
+	if err := c.ReKeySite(context.Background(), 3, "s3cret"); err != nil {
+		t.Fatalf("ReKeySite: %v", err)
+	}
+	if gotPath != "POST /v1/re-key/3/regenerate-site-secret" || !strings.Contains(gotBody, `"type":"newt"`) || !strings.Contains(gotBody, `"secret":"s3cret"`) {
+		t.Errorf("site re-key sent %s %s", gotPath, gotBody)
+	}
+	if err := c.ReKeyClient(context.Background(), 4, "olm"); err != nil {
+		t.Fatalf("ReKeyClient: %v", err)
+	}
+	if gotPath != "POST /v1/re-key/4/regenerate-client-secret" || !strings.Contains(gotBody, `"secret":"olm"`) {
+		t.Errorf("client re-key sent %s %s", gotPath, gotBody)
+	}
+}
+
 func TestArchiveClient_PropagatesError(t *testing.T) {
 	disableRetryBackoff(t)
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

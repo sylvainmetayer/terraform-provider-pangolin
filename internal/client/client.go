@@ -1930,6 +1930,19 @@ func (c *Client) UpdateSite(ctx context.Context, siteID int, req *UpdateSiteRequ
 	return &site, nil
 }
 
+// ReKeySite sets a new Newt secret on a site. The server disconnects the running
+// Newt (disconnect defaults to true), so the old secret stops working at once.
+func (c *Client) ReKeySite(ctx context.Context, siteID int, secret string) error {
+	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-site-secret", siteID), map[string]any{"type": "newt", "secret": secret})
+	return err
+}
+
+// ReKeyClient sets a new OLM secret on a machine client and disconnects the olm.
+func (c *Client) ReKeyClient(ctx context.Context, clientID int, secret string) error {
+	_, err := c.doRequestNoRetry(ctx, "POST", fmt.Sprintf("/re-key/%d/regenerate-client-secret", clientID), map[string]any{"secret": secret})
+	return err
+}
+
 // UpdateResourceRequest is the payload for updating a Pangolin
 // resource. Every field is optional - the server only touches the
 // keys that are present in the payload. The body schema is strict

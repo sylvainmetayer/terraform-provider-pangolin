@@ -21,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &SiteResource{}
 	_ resource.ResourceWithImportState = &SiteResource{}
+	_ resource.ResourceWithModifyPlan  = &SiteResource{}
 )
 
 // SiteResource defines the resource implementation.
@@ -39,6 +40,7 @@ type SiteResourceModel struct {
 	NewtID              types.String `tfsdk:"newt_id"`
 	NewtSecret          types.String `tfsdk:"newt_secret"`
 	DockerSocketEnabled types.Bool   `tfsdk:"docker_socket_enabled"`
+	RotationTrigger     types.String `tfsdk:"rotation_trigger"`
 }
 
 // NewSiteResource returns a new resource factory.
@@ -108,6 +110,7 @@ func (r *SiteResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"rotation_trigger": rotationTriggerAttribute("newt_secret", "Newt"),
 			"docker_socket_enabled": schema.BoolAttribute{
 				Description: "Enable Docker socket access on this site. Defaults to `true` to match the Pangolin API default.",
 				Optional:    true,
@@ -116,6 +119,10 @@ func (r *SiteResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 		},
 	}
+}
+
+func (r *SiteResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	markSecretUnknownOnRotation(ctx, req, resp, "newt_secret")
 }
 
 func (r *SiteResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -204,6 +211,12 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
+	var state SiteResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	site, err := r.client.UpdateSite(ctx, int(plan.ID.ValueInt64()), &client.UpdateSiteRequest{
 		Name:                plan.Name.ValueString(),
 		DockerSocketEnabled: plan.DockerSocketEnabled.ValueBool(),
@@ -219,7 +232,19 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	plan.Online = types.BoolValue(site.Online)
 	plan.Address = types.StringValue(site.Address)
 	plan.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
-	// newt_id and newt_secret are write-once; UseStateForUnknown preserves them in plan.
+	// newt_id is write-once; newt_secret only changes through rotation_trigger.
+	if !plan.RotationTrigger.Equal(state.RotationTrigger) {
+		defaults, err := r.client.GetSiteDefaults(ctx)
+		if err != nil {
+			resp.Diagnostics.AddError("Failed to generate a new site secret", err.Error())
+			return
+		}
+		if err := r.client.ReKeySite(ctx, int(plan.ID.ValueInt64()), defaults.NewtSecret); err != nil {
+			resp.Diagnostics.AddError("Failed to rotate site secret", err.Error())
+			return
+		}
+		plan.NewtSecret = types.StringValue(defaults.NewtSecret)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
