@@ -162,9 +162,18 @@ func (r *MTLSCertificateResource) Schema(_ context.Context, _ resource.SchemaReq
 				PlanModifiers: []planmodifier.String{
 					// A null state is an imported certificate: adopt the config
 					// (Update checks its fingerprint) instead of replacing.
-					stringplanmodifier.RequiresReplaceIf(func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
-						resp.RequiresReplace = !req.StateValue.IsNull()
-					}, "Replaces the certificate unless it was imported.", "Replaces the certificate unless it was imported."),
+					// Otherwise only a different certificate replaces: a
+					// whitespace or comment change keeps the fingerprint.
+					stringplanmodifier.RequiresReplaceIf(func(ctx context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+						if req.StateValue.IsNull() || req.PlanValue.IsUnknown() {
+							resp.RequiresReplace = !req.StateValue.IsNull()
+							return
+						}
+						var stateFP types.String
+						resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("fingerprint"), &stateFP)...)
+						fp, _ := certificateFingerprint(req.PlanValue.ValueString())
+						resp.RequiresReplace = fp != stateFP.ValueString()
+					}, "Replaces the certificate when its fingerprint changes.", "Replaces the certificate when its fingerprint changes."),
 				},
 				Validators: []validator.String{pemValidator{}},
 			},
