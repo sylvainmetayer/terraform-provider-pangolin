@@ -171,8 +171,9 @@ func TestSite_ImportStateShapeHasNullNewtSecret(t *testing.T) {
 
 func TestSite_UpdateRequestJSONShape(t *testing.T) {
 	// Update() builds a UpdateSiteRequest from the plan. Verify the
-	// serialized JSON keys match what Pangolin accepts (name +
-	// dockerSocketEnabled), no extra keys sneaking in.
+	// serialized JSON keys match what Pangolin accepts, no extra keys
+	// sneaking in; the auto-update pair is always sent (unset = follow
+	// the org).
 	req := &client.UpdateSiteRequest{
 		Name:                "renamed",
 		DockerSocketEnabled: false,
@@ -182,7 +183,25 @@ func TestSite_UpdateRequestJSONShape(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	// The wire key set is small and stable - use exact-match.
-	if string(raw) != `{"name":"renamed","dockerSocketEnabled":false}` {
+	if string(raw) != `{"name":"renamed","dockerSocketEnabled":false,"autoUpdateEnabled":false,"autoUpdateOverrideOrg":false}` {
 		t.Errorf("payload = %s", raw)
+	}
+}
+
+func TestSiteUpdateRequestNewtAutoUpdate(t *testing.T) {
+	m := SiteResourceModel{Name: types.StringValue("s"), DockerSocketEnabled: types.BoolValue(true), NewtAutoUpdate: types.BoolNull()}
+	if r := siteUpdateRequest(m); r.AutoUpdateOverrideOrg {
+		t.Fatal("unset must follow the org")
+	}
+	m.NewtAutoUpdate = types.BoolValue(false)
+	if r := siteUpdateRequest(m); !r.AutoUpdateOverrideOrg || r.AutoUpdateEnabled {
+		t.Fatalf("false must override off: %+v", r)
+	}
+	on, off := true, false
+	if v := siteNewtAutoUpdate(&client.Site{AutoUpdateEnabled: &on, AutoUpdateOverrideOrg: &off}); !v.IsNull() {
+		t.Fatal("no override must read as null")
+	}
+	if v := siteNewtAutoUpdate(&client.Site{AutoUpdateEnabled: &on, AutoUpdateOverrideOrg: &on}); !v.ValueBool() {
+		t.Fatal("override on must read as true")
 	}
 }

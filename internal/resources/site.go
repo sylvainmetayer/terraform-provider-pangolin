@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
+	"github.com/stackopshq/terraform-provider-pangolin/internal/tfconv"
 )
 
 var (
@@ -40,6 +41,7 @@ type SiteResourceModel struct {
 	NewtID              types.String `tfsdk:"newt_id"`
 	NewtSecret          types.String `tfsdk:"newt_secret"`
 	DockerSocketEnabled types.Bool   `tfsdk:"docker_socket_enabled"`
+	NewtAutoUpdate      types.Bool   `tfsdk:"newt_auto_update"`
 	RotationTrigger     types.String `tfsdk:"rotation_trigger"`
 }
 
@@ -117,6 +119,10 @@ func (r *SiteResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
 			},
+			"newt_auto_update": schema.BoolAttribute{
+				Description: "Whether this site's Newt updates itself, overriding the organization's `newt_auto_update` (`pangolin_org`). Unset, the site follows the organization. Enterprise: a server without a license forces it off, so `true` fails with an inconsistent result.",
+				Optional:    true,
+			},
 		},
 	}
 }
@@ -172,9 +178,42 @@ func (r *SiteResource) Create(ctx context.Context, req resource.CreateRequest, r
 	plan.Address = types.StringValue(site.Address)
 	plan.NewtID = types.StringValue(defaults.NewtID)
 	plan.NewtSecret = types.StringValue(defaults.NewtSecret)
+
+	// Create takes no settings: apply them when they differ from the
+	// server defaults (docker socket on, follow the org).
+	if !plan.NewtAutoUpdate.IsNull() || (!plan.DockerSocketEnabled.IsUnknown() && plan.DockerSocketEnabled.ValueBool() != site.DockerSocketEnabled) {
+		site, err = r.client.UpdateSite(ctx, site.SiteID, siteUpdateRequest(plan))
+		if err != nil {
+			// Keep the site in the state: the next apply retries the settings.
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			resp.Diagnostics.AddError("Failed to apply site settings after creation", err.Error())
+			return
+		}
+	}
 	plan.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
+	plan.NewtAutoUpdate = siteNewtAutoUpdate(site)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// siteUpdateRequest builds POST /site/{id}. An unset newt_auto_update
+// clears the override, so the site follows the org setting again.
+func siteUpdateRequest(m SiteResourceModel) *client.UpdateSiteRequest {
+	return &client.UpdateSiteRequest{
+		Name:                  m.Name.ValueString(),
+		DockerSocketEnabled:   m.DockerSocketEnabled.ValueBool(),
+		AutoUpdateEnabled:     m.NewtAutoUpdate.ValueBool(),
+		AutoUpdateOverrideOrg: !m.NewtAutoUpdate.IsNull() && !m.NewtAutoUpdate.IsUnknown(),
+	}
+}
+
+// siteNewtAutoUpdate reads the override back: null when the site follows
+// the org (or the server does not report it).
+func siteNewtAutoUpdate(s *client.Site) types.Bool {
+	if s.AutoUpdateOverrideOrg == nil || !*s.AutoUpdateOverrideOrg {
+		return types.BoolNull()
+	}
+	return tfconv.BoolFromPtr(s.AutoUpdateEnabled)
 }
 
 func (r *SiteResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -200,6 +239,7 @@ func (r *SiteResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	state.Online = types.BoolValue(site.Online)
 	state.Address = types.StringValue(site.Address)
 	state.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
+	state.NewtAutoUpdate = siteNewtAutoUpdate(site)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -217,10 +257,7 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	site, err := r.client.UpdateSite(ctx, int(plan.ID.ValueInt64()), &client.UpdateSiteRequest{
-		Name:                plan.Name.ValueString(),
-		DockerSocketEnabled: plan.DockerSocketEnabled.ValueBool(),
-	})
+	site, err := r.client.UpdateSite(ctx, int(plan.ID.ValueInt64()), siteUpdateRequest(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update site", err.Error())
 		return
@@ -232,6 +269,7 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	plan.Online = types.BoolValue(site.Online)
 	plan.Address = types.StringValue(site.Address)
 	plan.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
+	plan.NewtAutoUpdate = siteNewtAutoUpdate(site)
 	// newt_id is write-once; newt_secret only changes through rotation_trigger.
 	if rotationRequested(plan.RotationTrigger, state.RotationTrigger) {
 		// The update above is already applied: if the rotation fails, persist it
@@ -293,6 +331,7 @@ func (r *SiteResource) ImportState(ctx context.Context, req resource.ImportState
 		NewtID:              types.StringNull(),
 		NewtSecret:          types.StringNull(),
 		DockerSocketEnabled: types.BoolValue(site.DockerSocketEnabled),
+		NewtAutoUpdate:      siteNewtAutoUpdate(site),
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
