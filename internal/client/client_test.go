@@ -2776,7 +2776,7 @@ func TestCreateRole_SSHBodyEncoded(t *testing.T) {
 	})
 
 	allow := true
-	mode := "restricted"
+	mode := "commands"
 	if _, err := c.CreateRole(context.Background(), &CreateRoleRequest{
 		Name:            "new-role",
 		Description:     "from test",
@@ -2794,7 +2794,7 @@ func TestCreateRole_SSHBodyEncoded(t *testing.T) {
 	if string(gotBody["allowSsh"]) != "true" {
 		t.Errorf("allowSsh = %s", gotBody["allowSsh"])
 	}
-	if string(gotBody["sshSudoMode"]) != `"restricted"` {
+	if string(gotBody["sshSudoMode"]) != `"commands"` {
 		t.Errorf("sshSudoMode = %s", gotBody["sshSudoMode"])
 	}
 	// Unset fields must be absent
