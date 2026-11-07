@@ -115,6 +115,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_label` | Label of the organization |
 | `pangolin_label_attachment` | Attach a label to a site, a public or private resource, or a machine client |
 | `pangolin_ai_provider` | AI provider (OpenAI, Anthropic, Gemini, Bedrock, custom...) served by `inference` resources |
+| `pangolin_ai_model` | Allow or block one model of an AI provider |
 
 ## Data Sources
 
