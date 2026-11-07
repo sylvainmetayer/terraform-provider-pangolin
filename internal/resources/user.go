@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -101,11 +102,9 @@ func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"idp_id": schema.Int64Attribute{
-				Description: "ID of the identity provider the user signs in with. Required for `oidc` users, the only type the server accepts.",
-				Optional:    true,
-				Computed:    true,
+				Description: "ID of the identity provider the user signs in with. `oidc` is the only user type the server accepts, and it needs an IdP.",
+				Required:    true,
 				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.UseStateForUnknown(),
 					int64planmodifier.RequiresReplace(),
 				},
 			},
@@ -163,6 +162,18 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read the created user", err.Error())
 		return
+	}
+	// The create call cannot set auto_provisioned: apply it afterwards so
+	// a configured value does not clash with the server's default.
+	if want := plan.AutoProvisioned; !want.IsUnknown() && !want.IsNull() && want.ValueBool() != user.AutoProvisioned {
+		if _, err := r.client.UpdateUser(ctx, user.UserID, &client.UpdateUserRequest{AutoProvisioned: want.ValueBool()}); err != nil {
+			resp.Diagnostics.AddError("Failed to set auto_provisioned", err.Error())
+			// The user exists: keep it in state so it is not orphaned.
+			userToModel(user, &plan)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
+		user.AutoProvisioned = want.ValueBool()
 	}
 	userToModel(user, &plan)
 
@@ -244,7 +255,10 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 func userToModel(u *client.UserByUsernameResponse, m *UserResourceModel) {
 	m.ID = types.StringValue(u.UserID)
 	m.Username = types.StringValue(u.Username)
-	m.Email = types.StringPointerValue(u.Email)
+	// The server lowercases the email: keep the configured spelling.
+	if u.Email == nil || !strings.EqualFold(m.Email.ValueString(), *u.Email) {
+		m.Email = types.StringPointerValue(u.Email)
+	}
 	m.Name = types.StringPointerValue(u.Name)
 	m.Type = types.StringValue(u.Type)
 	m.AutoProvisioned = types.BoolValue(u.AutoProvisioned)

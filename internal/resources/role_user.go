@@ -152,16 +152,7 @@ func (r *RoleUserResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 
 	// No /role/{id}/remove route exists; detach the role from the user.
-	err = r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), roleID)
-	switch {
-	case err == nil, errors.Is(err, client.ErrNotFound):
-	case strings.Contains(err.Error(), "at least one role"):
-		resp.Diagnostics.AddWarning("User keeps the role",
-			"Pangolin requires every user to hold at least one role, and this is the user's last one. "+
-				"The assignment is dropped from the state but stays on the server.")
-	default:
-		resp.Diagnostics.AddError("Failed to remove user from role", err.Error())
-	}
+	removeRoleDiags(r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), roleID), &resp.Diagnostics)
 }
 
 func (r *RoleUserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

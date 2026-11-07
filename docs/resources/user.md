@@ -31,6 +31,7 @@ resource "pangolin_user" "alice" {
 
 ### Required
 
+- `idp_id` (Number) ID of the identity provider the user signs in with. `oidc` is the only user type the server accepts, and it needs an IdP.
 - `role_id` (Number) The role ID to assign to the user.
 - `username` (String) The username.
 
@@ -38,7 +39,6 @@ resource "pangolin_user" "alice" {
 
 - `auto_provisioned` (Boolean) Whether the user was auto-provisioned.
 - `email` (String) The user email address.
-- `idp_id` (Number) ID of the identity provider the user signs in with. Required for `oidc` users, the only type the server accepts.
 - `name` (String) The display name of the user.
 - `type` (String) The user type: 'oidc' or 'internal'. Defaults to 'oidc'.
 
