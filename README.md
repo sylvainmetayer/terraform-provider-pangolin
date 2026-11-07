@@ -86,6 +86,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_org_idp` | OIDC IDP scoped to a single organization (single-resource alternative to `pangolin_idp` + `pangolin_idp_org`) |
 | `pangolin_alert_rule` | Alert rule: email and webhook notifications on site, health check or resource events (Enterprise) |
 | `pangolin_resource_policy` | Shared resource policy: SSO, role / user grants, email whitelist, rules (Enterprise) |
+| `pangolin_redirects` | List redirects (filter by text, type, enabled state, resource and domain) |
 | `pangolin_resource_policy_password` | Password protection for a resource policy (Enterprise) |
 | `pangolin_resource_policy_pincode` | PIN-code protection for a resource policy (Enterprise) |
 | `pangolin_resource_policy_header_auth` | Header-based authentication for a resource policy (Enterprise) |

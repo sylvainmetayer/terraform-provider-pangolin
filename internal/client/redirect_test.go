@@ -71,3 +71,24 @@ func TestGetRedirect_MissingIDIsAnError(t *testing.T) {
 		t.Error("want an error on a response without a redirect")
 	}
 }
+
+func TestListRedirects_FiltersAndExtraFields(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/v1/org/test-org/redirects" || q.Get("type") != "permanent" || q.Get("enabled") != "false" || q.Get("resourceId") != "4" || q.Get("sort_by") != "name" {
+			t.Errorf("got %s", r.URL.String())
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"redirects":  []map[string]any{{"redirectId": 7, "name": "r", "permanent": true, "resourceId": 4, "resourceName": "res", "baseDomain": "example.com"}},
+			"pagination": map[string]any{"total": 1},
+		})
+	})
+	enabled, rid := false, 4
+	got, err := c.ListRedirects(context.Background(), RedirectListQuery{Type: "permanent", Enabled: &enabled, ResourceID: &rid})
+	if err != nil {
+		t.Fatalf("ListRedirects: %v", err)
+	}
+	if len(got) != 1 || got[0].RedirectID != 7 || got[0].ResourceName == nil || *got[0].ResourceName != "res" || *got[0].BaseDomain != "example.com" {
+		t.Errorf("got %+v", got)
+	}
+}
