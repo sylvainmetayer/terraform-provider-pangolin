@@ -411,13 +411,15 @@ func (c *Client) GetSiteDefaults(ctx context.Context) (*SiteDefaults, error) {
 // metadata. All these read-only fields are omitempty so older
 // CRUD code paths that fill only the first seven keep working.
 type Site struct {
-	SiteID              int    `json:"siteId"`
-	NiceID              string `json:"niceId"`
-	Name                string `json:"name"`
-	Type                string `json:"type"`
-	Online              bool   `json:"online"`
-	Address             string `json:"address"`
-	DockerSocketEnabled bool   `json:"dockerSocketEnabled"`
+	SiteID                int    `json:"siteId"`
+	NiceID                string `json:"niceId"`
+	Name                  string `json:"name"`
+	Type                  string `json:"type"`
+	Online                bool   `json:"online"`
+	Address               string `json:"address"`
+	DockerSocketEnabled   bool   `json:"dockerSocketEnabled"`
+	AutoUpdateEnabled     *bool  `json:"autoUpdateEnabled"`
+	AutoUpdateOverrideOrg *bool  `json:"autoUpdateOverrideOrg"`
 
 	// Extended fields surfaced by /org/{org}/site/{niceId}
 	OrgID               string  `json:"orgId,omitempty"`
@@ -1950,6 +1952,10 @@ func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
 type UpdateSiteRequest struct {
 	Name                string `json:"name"`
 	DockerSocketEnabled bool   `json:"dockerSocketEnabled"`
+	// Newt auto-update: with AutoUpdateOverrideOrg false the site follows
+	// the org setting and AutoUpdateEnabled is ignored.
+	AutoUpdateEnabled     bool `json:"autoUpdateEnabled"`
+	AutoUpdateOverrideOrg bool `json:"autoUpdateOverrideOrg"`
 }
 
 // UpdateSite updates a site by ID.

@@ -44,7 +44,7 @@ func TestSiteCreate_ParallelGetDistinctAddresses(t *testing.T) {
 				return
 			}
 			used[body.Address] = true
-			fmt.Fprintf(w, `{"success":true,"data":{"siteId":%d,"name":%q,"type":"newt","address":%q}}`, len(used), body.Name, body.Address)
+			fmt.Fprintf(w, `{"success":true,"data":{"siteId":%d,"name":%q,"type":"newt","address":%q,"dockerSocketEnabled":true}}`, len(used), body.Name, body.Address)
 		}
 	}))
 	t.Cleanup(srv.Close)
