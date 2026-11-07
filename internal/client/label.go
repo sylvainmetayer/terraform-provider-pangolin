@@ -60,9 +60,14 @@ func (c *Client) CreateLabel(ctx context.Context, req *LabelRequest) (*Label, er
 // is an error: callers read a miss as "gone", which removes the object from
 // the state, so an unexpected shape must not look like one.
 func (c *Client) walkOrgList(ctx context.Context, route, query, key string, visit func(json.RawMessage) (bool, error)) error {
+	return c.walkList(ctx, fmt.Sprintf("/org/%s/%s", c.OrgID, route), query, key, visit)
+}
+
+// walkList is walkOrgList for any paginated list route.
+func (c *Client) walkList(ctx context.Context, route, query, key string, visit func(json.RawMessage) (bool, error)) error {
 	seen := 0
 	for page := 1; ; page++ {
-		path := fmt.Sprintf("/org/%s/%s?pageSize=%d&page=%d", c.OrgID, route, labelListPageSize, page)
+		path := fmt.Sprintf("%s?pageSize=%d&page=%d", route, labelListPageSize, page)
 		if query != "" {
 			path += "&" + query
 		}
@@ -103,8 +108,13 @@ func (c *Client) walkOrgList(ctx context.Context, route, query, key string, visi
 
 // listOrg returns every item of the paginated list /org/{org}/{route}.
 func listOrg[T any](ctx context.Context, c *Client, route, key string) ([]T, error) {
+	return listOrgQuery[T](ctx, c, route, "", key)
+}
+
+// listOrgQuery is listOrg with extra query parameters.
+func listOrgQuery[T any](ctx context.Context, c *Client, route, query, key string) ([]T, error) {
 	items := []T{}
-	err := c.walkOrgList(ctx, route, "", key, func(raw json.RawMessage) (bool, error) {
+	err := c.walkOrgList(ctx, route, query, key, func(raw json.RawMessage) (bool, error) {
 		var item T
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return false, fmt.Errorf("failed to parse %s: %w", route, err)

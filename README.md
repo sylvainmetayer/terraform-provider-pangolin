@@ -125,6 +125,11 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_blueprint` | Single blueprint lookup by ID (exposes raw `contents` + apply outcome) |
 | `pangolin_resource_policies` | List the shared resource policies of the org with their attached resources (Enterprise) |
 | `pangolin_resource_policy` | Single resource policy lookup by ID (grants, whitelist, rules, which secrets are set) (Enterprise) |
+| `pangolin_ai_providers` | List the AI gateway providers (no API key, no headers) |
+| `pangolin_ai_models` | List the model entries of an AI provider |
+| `pangolin_ai_catalog_models` | List the model keys Pangolin's catalog knows for a provider type |
+| `pangolin_ai_budgets` | List the AI gateway budgets |
+| `pangolin_virtual_api_keys` | List the manual virtual API keys (never the secret) |
 
 ## Example
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // AIModel is a model entry of an AI provider (Pangolin 1.22+): an allow
@@ -71,4 +72,49 @@ func (c *Client) UpdateAIModel(ctx context.Context, modelID int, req *AIModelReq
 func (c *Client) DeleteAIModel(ctx context.Context, modelID int) error {
 	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/ai-model/%d", modelID), nil)
 	return err
+}
+
+// ListAIModels lists the model entries of an AI provider. query filters on
+// the name (case-insensitive).
+func (c *Client) ListAIModels(ctx context.Context, providerID int, query string) ([]AIModel, error) {
+	q := url.Values{}
+	if query != "" {
+		q.Set("query", query)
+	}
+	out := []AIModel{}
+	err := c.walkList(ctx, fmt.Sprintf("/ai-provider/%d/models", providerID), q.Encode(), "models", func(raw json.RawMessage) (bool, error) {
+		var m AIModel
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return false, fmt.Errorf("failed to parse AI model: %w", err)
+		}
+		out = append(out, m)
+		return false, nil
+	})
+	return out, err
+}
+
+// ListAICatalogModels lists the model keys Pangolin knows for a provider
+// type (not paginated). query filters on the key.
+func (c *Client) ListAICatalogModels(ctx context.Context, providerType, query string) ([]string, error) {
+	q := url.Values{"type": {providerType}}
+	if query != "" {
+		q.Set("query", query)
+	}
+	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/ai-catalog-models?%s", c.OrgID, q.Encode()), nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Models []struct {
+			Model string `json:"model"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse AI catalog models: %w", err)
+	}
+	keys := make([]string, 0, len(out.Models))
+	for _, m := range out.Models {
+		keys = append(keys, m.Model)
+	}
+	return keys, nil
 }

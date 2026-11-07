@@ -251,6 +251,11 @@ func (p *PangolinProvider) DataSources(_ context.Context) []func() datasource.Da
 		datasources.NewAlertRuleDataSource,
 		datasources.NewResourcePoliciesDataSource,
 		datasources.NewResourcePolicyDataSource,
+		datasources.NewAIProvidersDataSource,
+		datasources.NewAIModelsDataSource,
+		datasources.NewAICatalogModelsDataSource,
+		datasources.NewAIBudgetsDataSource,
+		datasources.NewVirtualAPIKeysDataSource,
 	}
 }
 

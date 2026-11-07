@@ -19,6 +19,10 @@ type VirtualAPIKey struct {
 	ResourceIDs     []int   `json:"resourceIds"`
 	// ExpiresAt is a Unix time in milliseconds.
 	ExpiresAt *int64 `json:"expiresAt"`
+	// Only in list responses and the full row.
+	LastChars  string `json:"lastChars"`
+	LastUsedAt *int64 `json:"lastUsedAt"`
+	CreatedAt  int64  `json:"createdAt"`
 }
 
 // VirtualAPIKeyRequest is the body of PUT /org/{org}/virtual-api-key and
@@ -79,4 +83,21 @@ func (c *Client) UpdateVirtualAPIKey(ctx context.Context, id string, req *Virtua
 func (c *Client) DeleteVirtualAPIKey(ctx context.Context, id string) error {
 	_, err := c.doRequest(ctx, "DELETE", "/virtual-api-key/"+url.PathEscape(id), nil)
 	return err
+}
+
+// ListVirtualAPIKeys lists the manual virtual API keys of the org. The
+// list never carries the secret, only its last characters. search matches
+// name, description and last characters; userID and resourceID filter.
+func (c *Client) ListVirtualAPIKeys(ctx context.Context, search, userID string, resourceID *int) ([]VirtualAPIKey, error) {
+	q := url.Values{}
+	if search != "" {
+		q.Set("search", search)
+	}
+	if userID != "" {
+		q.Set("userId", userID)
+	}
+	if resourceID != nil {
+		q.Set("resourceId", fmt.Sprint(*resourceID))
+	}
+	return listOrgQuery[VirtualAPIKey](ctx, c, "virtual-api-keys", q.Encode(), "virtualApiKeys")
 }

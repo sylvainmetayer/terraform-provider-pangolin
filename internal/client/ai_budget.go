@@ -101,3 +101,8 @@ func (c *Client) DeleteAIBudget(ctx context.Context, budgetID int) error {
 	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/ai-budget/%d", budgetID), nil)
 	return err
 }
+
+// ListAIBudgets lists every AI budget of the org.
+func (c *Client) ListAIBudgets(ctx context.Context) ([]AIBudget, error) {
+	return listOrg[AIBudget](ctx, c, "ai-budgets", "budgets")
+}
