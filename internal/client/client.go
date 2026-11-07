@@ -1719,6 +1719,36 @@ func (c *Client) UserHasRole(ctx context.Context, userID string, roleID int) (bo
 	return false, fmt.Errorf("user %s: %w", userID, ErrNotFound)
 }
 
+// AddRoleToClient gives a role to a machine client (Enterprise). The
+// server ignores a role the client already has, so a retry is harmless.
+func (c *Client) AddRoleToClient(ctx context.Context, clientID, roleID int) error {
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/client/%d/add-role/%d", clientID, roleID), nil)
+	return err
+}
+
+// RemoveRoleFromClient removes a role from a machine client.
+func (c *Client) RemoveRoleFromClient(ctx context.Context, clientID, roleID int) error {
+	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/client/%d/remove-role/%d", clientID, roleID), nil)
+	return err
+}
+
+// ClientHasRole reports whether a role is assigned directly to a client.
+func (c *Client) ClientHasRole(ctx context.Context, clientID, roleID int) (bool, error) {
+	cl, err := c.GetOLMClient(ctx, clientID)
+	if err != nil {
+		return false, err
+	}
+	if cl.Roles == nil {
+		return false, fmt.Errorf("GET /client/%d has no roles: client roles need Pangolin 1.24+", clientID)
+	}
+	for _, r := range *cl.Roles {
+		if r.RoleID == roleID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // AddRoleToResource assigns a role to an HTTP resource.
 func (c *Client) AddRoleToResource(ctx context.Context, resourceID, roleID int) error {
 	body := map[string]int{"roleId": roleID}
@@ -2496,6 +2526,11 @@ type OLMClient struct {
 	Archived bool   `json:"archived"`
 	Blocked  bool   `json:"blocked"`
 	Secret   string `json:"secret"` // Only returned on creation.
+	// Roles assigned directly to a machine client (GET /client/{id}, Pangolin 1.24+).
+	// Nil when the server does not send the field (before 1.24).
+	Roles *[]struct {
+		RoleID int `json:"roleId"`
+	} `json:"roles"`
 }
 
 // CreateOLMClientRequest is the payload for creating an OLM client.
