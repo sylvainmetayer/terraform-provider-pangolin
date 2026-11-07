@@ -233,14 +233,21 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	plan.Address = types.StringValue(site.Address)
 	plan.DockerSocketEnabled = types.BoolValue(site.DockerSocketEnabled)
 	// newt_id is write-once; newt_secret only changes through rotation_trigger.
-	if !plan.RotationTrigger.Equal(state.RotationTrigger) {
+	if rotationRequested(plan.RotationTrigger, state.RotationTrigger) {
+		// The update above is already applied: if the rotation fails, persist it
+		// with the old secret and trigger so the next apply retries only the rotation.
+		failedRotation := func(summary string, err error) {
+			plan.NewtSecret, plan.RotationTrigger = state.NewtSecret, state.RotationTrigger
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			resp.Diagnostics.AddError(summary, err.Error())
+		}
 		defaults, err := r.client.GetSiteDefaults(ctx)
 		if err != nil {
-			resp.Diagnostics.AddError("Failed to generate a new site secret", err.Error())
+			failedRotation("Failed to generate a new site secret", err)
 			return
 		}
 		if err := r.client.ReKeySite(ctx, int(plan.ID.ValueInt64()), defaults.NewtSecret); err != nil {
-			resp.Diagnostics.AddError("Failed to rotate site secret", err.Error())
+			failedRotation("Failed to rotate site secret", err)
 			return
 		}
 		plan.NewtSecret = types.StringValue(defaults.NewtSecret)

@@ -37,7 +37,7 @@ output "example_newt_secret" {
 ### Optional
 
 - `docker_socket_enabled` (Boolean) Enable Docker socket access on this site. Defaults to `true` to match the Pangolin API default.
-- `rotation_trigger` (String) Arbitrary value that triggers a rotation of `newt_secret` whenever it changes (for example `"2026-11"`). On change, a new Newt secret is generated and `newt_secret` is updated in state. The new secret takes effect immediately: Pangolin disconnects the running tunnel and the old secret is rejected, so the connector stays down until it is restarted with the new secret. Changing it from unset to a value also rotates. Not read back from the API, so it is unset after `terraform import`.
+- `rotation_trigger` (String) Arbitrary value that triggers a rotation of `newt_secret` whenever it changes (for example `"2026-11"`). On change, a new Newt secret is generated and `newt_secret` is updated in state. The new secret takes effect immediately: Pangolin disconnects the running tunnel and the old secret is rejected, so the connector stays down until it is restarted with the new secret. Changing it from unset to a value also rotates; removing it does not. Not read back from the API, so it is unset after `terraform import`.
 
 ### Read-Only
 

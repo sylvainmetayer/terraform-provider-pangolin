@@ -240,14 +240,22 @@ func (r *OLMClientResource) Update(ctx context.Context, req resource.UpdateReque
 	// olmId is immutable, so its current value is whatever is already in state.
 	plan.OlmID = state.OlmID
 
-	if !plan.RotationTrigger.Equal(state.RotationTrigger) {
+	if rotationRequested(plan.RotationTrigger, state.RotationTrigger) {
+		// The rename/lifecycle changes above are already applied: if the rotation
+		// fails, persist them with the old secret and trigger so the next apply
+		// retries only the rotation.
+		failedRotation := func(summary string, err error) {
+			plan.Secret, plan.RotationTrigger = state.Secret, state.RotationTrigger
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			resp.Diagnostics.AddError(summary, err.Error())
+		}
 		defaults, err := r.client.GetClientDefaults(ctx)
 		if err != nil {
-			resp.Diagnostics.AddError("Failed to generate a new client secret", err.Error())
+			failedRotation("Failed to generate a new client secret", err)
 			return
 		}
 		if err := r.client.ReKeyClient(ctx, int(plan.ID.ValueInt64()), defaults.OlmSecret); err != nil {
-			resp.Diagnostics.AddError("Failed to rotate client secret", err.Error())
+			failedRotation("Failed to rotate client secret", err)
 			return
 		}
 		plan.Secret = types.StringValue(defaults.OlmSecret)
