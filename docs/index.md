@@ -121,6 +121,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_virtual_api_key` | Bearer key for the public inference resources of the AI gateway |
 | `pangolin_ai_budget` | Spending cap of the AI gateway, per provider, model, resource, role, key or organization |
 | `pangolin_event_streaming_destination` | Stream logs to an HTTP endpoint or an S3 bucket |
+| `pangolin_custom_dns_record` | DNS record served by Pangolin's nameservers for a delegated (`ns`) domain |
 
 ## Data Sources
 
