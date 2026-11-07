@@ -3499,6 +3499,8 @@ type UpdateOrgIDPRequest struct {
 }
 
 // UpdateIDPRequest is the payload for updating an OIDC IDP.
+// AutoProvision, EmailPath, NamePath and Tags are always sent so they can be
+// turned off or emptied (omitempty dropped false and "").
 type UpdateIDPRequest struct {
 	Name                string `json:"name,omitempty"`
 	ClientID            string `json:"clientId,omitempty"`
@@ -3506,11 +3508,11 @@ type UpdateIDPRequest struct {
 	AuthURL             string `json:"authUrl,omitempty"`
 	TokenURL            string `json:"tokenUrl,omitempty"`
 	IdentifierPath      string `json:"identifierPath,omitempty"`
-	EmailPath           string `json:"emailPath,omitempty"`
-	NamePath            string `json:"namePath,omitempty"`
+	EmailPath           string `json:"emailPath"`
+	NamePath            string `json:"namePath"`
 	Scopes              string `json:"scopes,omitempty"`
-	AutoProvision       bool   `json:"autoProvision,omitempty"`
-	Tags                string `json:"tags,omitempty"`
+	AutoProvision       bool   `json:"autoProvision"`
+	Tags                string `json:"tags"`
 	Variant             string `json:"variant,omitempty"`
 	SessionRevalidation *bool  `json:"sessionRevalidation,omitempty"`
 }
