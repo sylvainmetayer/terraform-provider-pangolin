@@ -55,6 +55,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_redirect` | Redirect attached to a public resource or to a domain |
 | `pangolin_label` | Label of the organization |
 | `pangolin_label_attachment` | Attach a label to a site, a public or private resource, or a machine client |
+| `pangolin_ai_provider` | AI provider (OpenAI, Anthropic, Gemini, Bedrock, custom...) served by `inference` resources |
 | `pangolin_api_key` | API key |
 | `pangolin_api_key_actions` | Set of actions (permissions) granted to an API key |
 | `pangolin_client` | OLM client device |

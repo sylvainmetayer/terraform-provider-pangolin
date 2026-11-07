@@ -59,15 +59,15 @@ resource "pangolin_site_resource" "exit_node" {
 }
 
 # AI inference endpoint (inference mode, Pangolin 1.22+) - served through
-# the exit node, so it has no site. The AI providers are created outside
-# Terraform for now; reference them by ID.
+# the exit node, so it has no site. The AI providers come from
+# pangolin_ai_provider.
 resource "pangolin_site_resource" "llm" {
   name            = "llm"
   mode            = "inference"
   domain_id       = data.pangolin_domains.all.domains[0].id
   subdomain       = "llm"
   ssl             = true
-  ai_provider_ids = [3]
+  ai_provider_ids = [pangolin_ai_provider.ollama.id]
 }
 
 # A resource can be kept but disabled.
