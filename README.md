@@ -63,6 +63,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_api_key` | API key |
 | `pangolin_api_key_actions` | Set of actions (permissions) granted to an API key |
 | `pangolin_client` | OLM client device |
+| `pangolin_client_role` | Role of a machine client (access to the role's private resources) |
 | `pangolin_invitation` | Pending organization invitation |
 | `pangolin_resource_role` | Assign a role to an HTTP resource |
 | `pangolin_resource_user` | Assign a user to an HTTP resource |

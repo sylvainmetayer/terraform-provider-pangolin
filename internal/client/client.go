@@ -1690,6 +1690,33 @@ func (c *Client) AddRoleToUser(ctx context.Context, userID string, roleID int) e
 	return err
 }
 
+// AddRoleToClient gives a role to a machine client (Enterprise). The
+// server ignores a role the client already has, so a retry is harmless.
+func (c *Client) AddRoleToClient(ctx context.Context, clientID, roleID int) error {
+	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/client/%d/add-role/%d", clientID, roleID), nil)
+	return err
+}
+
+// RemoveRoleFromClient removes a role from a machine client.
+func (c *Client) RemoveRoleFromClient(ctx context.Context, clientID, roleID int) error {
+	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/client/%d/remove-role/%d", clientID, roleID), nil)
+	return err
+}
+
+// ClientHasRole reports whether a role is assigned directly to a client.
+func (c *Client) ClientHasRole(ctx context.Context, clientID, roleID int) (bool, error) {
+	cl, err := c.GetOLMClient(ctx, clientID)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range cl.Roles {
+		if r.RoleID == roleID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // RemoveRoleFromUser detaches one role from a user without touching
 // the user's other roles. Pairs with AddRoleToUser.
 func (c *Client) RemoveRoleFromUser(ctx context.Context, userID string, roleID int) error {
@@ -2496,6 +2523,10 @@ type OLMClient struct {
 	Archived bool   `json:"archived"`
 	Blocked  bool   `json:"blocked"`
 	Secret   string `json:"secret"` // Only returned on creation.
+	// Roles assigned directly to a machine client (GET /client/{id}, Pangolin 1.24+).
+	Roles []struct {
+		RoleID int `json:"roleId"`
+	} `json:"roles"`
 }
 
 // CreateOLMClientRequest is the payload for creating an OLM client.
