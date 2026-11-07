@@ -1985,16 +1985,15 @@ func (c *Client) ReKeyClient(ctx context.Context, clientID int, secret string) e
 // a server version does not know must stay off the payload unless
 // the config sets it: every field but `name` is `omitempty`.
 type UpdateResourceRequest struct {
-	Name                  string  `json:"name"`
-	Subdomain             *string `json:"subdomain,omitempty"`
-	SSO                   *bool   `json:"sso,omitempty"`
-	SSL                   *bool   `json:"ssl,omitempty"`
-	Enabled               *bool   `json:"enabled,omitempty"`
-	BlockAccess           *bool   `json:"blockAccess,omitempty"`
-	EmailWhitelistEnabled *bool   `json:"emailWhitelistEnabled,omitempty"`
-	ApplyRules            *bool   `json:"applyRules,omitempty"`
-	StickySession         *bool   `json:"stickySession,omitempty"`
-	// Sent only when set, like every optional field here.
+	Name                   string  `json:"name"`
+	Subdomain              *string `json:"subdomain,omitempty"`
+	SSO                    *bool   `json:"sso,omitempty"`
+	SSL                    *bool   `json:"ssl,omitempty"`
+	Enabled                *bool   `json:"enabled,omitempty"`
+	BlockAccess            *bool   `json:"blockAccess,omitempty"`
+	EmailWhitelistEnabled  *bool   `json:"emailWhitelistEnabled,omitempty"`
+	ApplyRules             *bool   `json:"applyRules,omitempty"`
+	StickySession          *bool   `json:"stickySession,omitempty"`
 	LoadBalancingStrategy  *string `json:"loadBalancingStrategy,omitempty"`
 	ForwardIdentityHeaders *bool   `json:"forwardIdentityHeaders,omitempty"`
 	TLSServerName          *string `json:"tlsServerName,omitempty"`

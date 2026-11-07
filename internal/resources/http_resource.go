@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -297,7 +298,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 			},
 			"load_balancing_strategy": schema.StringAttribute{
-				Description: "How an HTTP resource spreads requests over its targets: `wrr` (weighted round robin, the server default), `p2c` (power of two choices), `hrw` (highest random weight, hashes the client IP) or `leasttime` (lowest response time).",
+				Description: "How an HTTP resource spreads requests over its targets: `wrr` (weighted round robin, the server default), `p2c` (power of two choices), `hrw` (highest random weight, hashes the client IP) or `leasttime` (lowest response time). HTTP resources only. Removing the attribute keeps the current value.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -308,7 +309,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"forward_identity_headers": schema.BoolAttribute{
-				Description: "Send the authenticated user's identity to the backend in the `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and `Remote-User-Id` headers. The server default is `true`.",
+				Description: "Send the authenticated user's identity to the backend in the `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and `Remote-User-Id` headers. The server default is `true`. HTTP resources only. Removing the attribute keeps the current value: set `true` to restore it.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
@@ -662,6 +663,18 @@ func (r *HTTPResource) ValidateConfig(ctx context.Context, req resource.Validate
 	}
 	if mode.IsNull() || mode.IsUnknown() || mode.ValueString() == "http" {
 		return
+	}
+	// L4 resources are updated with name/enabled only, so these would never
+	// reach the server and the applied value would not match the plan.
+	if !resourceModeUsesDomain(mode.ValueString()) {
+		for _, name := range []string{"load_balancing_strategy", "forward_identity_headers"} {
+			var v attr.Value
+			resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(name), &v)...)
+			if !v.IsNull() && !v.IsUnknown() {
+				resp.Diagnostics.AddAttributeError(path.Root(name), "Not supported in L4 mode",
+					fmt.Sprintf("`%s` only applies to domain-based resources, not `mode = %q`.", name, mode.ValueString()))
+			}
+		}
 	}
 	for _, attr := range []string{"headers", "response_headers"} {
 		var hs types.List
