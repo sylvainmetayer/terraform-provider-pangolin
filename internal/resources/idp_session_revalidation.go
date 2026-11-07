@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -16,7 +17,7 @@ func sessionRevalidationAttribute() schema.BoolAttribute {
 		Description: "Check each Pangolin session against the identity provider with its refresh token, so a user disabled or removed there loses access without waiting for the session to expire. " +
 			"Requires Pangolin 1.26.0 or later (an older server refuses the field) and an enterprise license. " +
 			"Pangolin needs a refresh token: with `true`, `scopes` must contain `offline_access`, except for `variant = \"google\"`, where it must not (Google uses `access_type=offline`). " +
-			"Null when the server does not report it.",
+			"Removing the attribute keeps the current value: set `false` to turn it off. Null when the server does not report it.",
 		Optional: true,
 		Computed: true,
 		PlanModifiers: []planmodifier.Bool{
@@ -30,15 +31,10 @@ func sessionRevalidationAttribute() schema.BoolAttribute {
 // scopes (removes it for Google), which would then drift from the config.
 func validateSessionRevalidationScopes(enabled types.Bool, scopes, variant types.String) diag.Diagnostics {
 	var diags diag.Diagnostics
-	if enabled.IsUnknown() || !enabled.ValueBool() || scopes.IsUnknown() || variant.IsUnknown() {
+	if enabled.IsUnknown() || !enabled.ValueBool() || scopes.IsUnknown() {
 		return diags
 	}
-	has := false
-	for _, s := range strings.Fields(scopes.ValueString()) {
-		if s == "offline_access" {
-			has = true
-		}
-	}
+	has := slices.Contains(strings.Fields(scopes.ValueString()), "offline_access")
 	google := variant.ValueString() == "google"
 	if google && has {
 		diags.AddAttributeError(path.Root("scopes"), "offline_access not allowed with session revalidation on Google",

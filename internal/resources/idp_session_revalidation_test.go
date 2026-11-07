@@ -25,6 +25,8 @@ func TestValidateSessionRevalidationScopes(t *testing.T) {
 		{types.BoolValue(false), "openid", types.StringNull(), false},
 		{types.BoolNull(), "openid", types.StringNull(), false},
 		{types.BoolUnknown(), "openid", types.StringNull(), false},
+		{types.BoolValue(true), "openid", types.StringUnknown(), true},
+		{types.BoolValue(true), "openid offline_access", types.StringUnknown(), false},
 	}
 	for i, c := range cases {
 		got := validateSessionRevalidationScopes(c.on, types.StringValue(c.scopes), c.variant).HasError()

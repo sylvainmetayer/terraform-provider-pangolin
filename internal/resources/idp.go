@@ -20,9 +20,9 @@ import (
 )
 
 var (
-	_ resource.Resource                   = &IDPResource{}
-	_ resource.ResourceWithImportState    = &IDPResource{}
-	_ resource.ResourceWithValidateConfig = &IDPResource{}
+	_ resource.Resource                = &IDPResource{}
+	_ resource.ResourceWithImportState = &IDPResource{}
+	_ resource.ResourceWithModifyPlan  = &IDPResource{}
 )
 
 // IDPResource manages a Pangolin OIDC Identity Provider.
@@ -375,11 +375,17 @@ func resolveIDPVariant(prior types.String, idp *client.IDP, cfg *client.IDPOidcC
 	return "oidc"
 }
 
-func (r *IDPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var cfg IDPResourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+// ModifyPlan checks the planned scopes against session_revalidation. It
+// runs on the plan, not the config, so a value kept from the state (an
+// unset variant or session_revalidation) is checked too.
+func (r *IDPResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan IDPResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(validateSessionRevalidationScopes(cfg.SessionRevalidation, cfg.Scopes, cfg.Variant)...)
+	resp.Diagnostics.Append(validateSessionRevalidationScopes(plan.SessionRevalidation, plan.Scopes, plan.Variant)...)
 }

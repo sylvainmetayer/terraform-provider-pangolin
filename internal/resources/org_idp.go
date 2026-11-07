@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	_ resource.Resource                   = &OrgIDPResource{}
-	_ resource.ResourceWithImportState    = &OrgIDPResource{}
-	_ resource.ResourceWithValidateConfig = &OrgIDPResource{}
+	_ resource.Resource                = &OrgIDPResource{}
+	_ resource.ResourceWithImportState = &OrgIDPResource{}
+	_ resource.ResourceWithModifyPlan  = &OrgIDPResource{}
 )
 
 // OrgIDPResource manages an OIDC Identity Provider scoped to a single
@@ -412,11 +412,17 @@ func hydrateOrgIDPState(state *OrgIDPResourceModel, detail *client.OrgIDPDetail)
 	state.OrgMapping = tfconv.StringFromPtr(detail.IDPOrg.OrgMapping)
 }
 
-func (r *OrgIDPResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var cfg OrgIDPResourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+// ModifyPlan checks the planned scopes against session_revalidation. It
+// runs on the plan, not the config, so a value kept from the state (an
+// unset variant or session_revalidation) is checked too.
+func (r *OrgIDPResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan OrgIDPResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(validateSessionRevalidationScopes(cfg.SessionRevalidation, cfg.Scopes, cfg.Variant)...)
+	resp.Diagnostics.Append(validateSessionRevalidationScopes(plan.SessionRevalidation, plan.Scopes, plan.Variant)...)
 }
