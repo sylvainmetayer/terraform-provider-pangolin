@@ -294,6 +294,10 @@ func (r *SiteResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			return
 		}
 		plan.NewtSecret = types.StringValue(defaults.NewtSecret)
+		if !plan.RotationDisconnect.ValueBool() {
+			resp.Diagnostics.AddWarning("Secret rotated without disconnecting",
+				"The running Newt keeps its session with the old secret, which is refused at its next reconnect: restart it with the new secret now.")
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)

@@ -262,6 +262,10 @@ func (r *OLMClientResource) Update(ctx context.Context, req resource.UpdateReque
 			return
 		}
 		plan.Secret = types.StringValue(defaults.OlmSecret)
+		if !plan.RotationDisconnect.ValueBool() {
+			resp.Diagnostics.AddWarning("Secret rotated without disconnecting",
+				"The running OLM keeps its session with the old secret, which is refused at its next reconnect: restart it with the new secret now.")
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
