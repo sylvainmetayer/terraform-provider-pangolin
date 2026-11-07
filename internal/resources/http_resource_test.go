@@ -780,3 +780,21 @@ func TestUpdatePayload_HeadersKey(t *testing.T) {
 		})
 	}
 }
+
+func TestMoveToNewSubdomain(t *testing.T) {
+	state := HTTPResourceModel{Subdomain: types.StringValue("app"), DomainID: types.StringValue("d1")}
+	req := &client.UpdateResourceRequest{}
+	moveToNewSubdomain(req, state, state)
+	if req.DomainID != "" {
+		t.Fatal("domainId sent without a subdomain change")
+	}
+	for _, sub := range []types.String{types.StringValue("app2"), types.StringNull()} {
+		plan := state
+		plan.Subdomain = sub
+		req := &client.UpdateResourceRequest{}
+		moveToNewSubdomain(req, plan, state)
+		if req.DomainID != "d1" {
+			t.Fatalf("subdomain %s: domainId not sent", sub)
+		}
+	}
+}

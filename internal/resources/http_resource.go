@@ -161,6 +161,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					followSubdomain{},
 				},
 			},
 			"domain_id": schema.StringAttribute{
@@ -428,6 +429,7 @@ func (r *HTTPResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
+					followSubdomain{},
 				},
 			},
 			"health": schema.StringAttribute{
@@ -658,6 +660,7 @@ func (r *HTTPResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// have written anyway.
 	updateReq := buildHTTPResourceUpdateRequest(plan)
 	clearRemovedHeaders(updateReq, plan, state)
+	moveToNewSubdomain(updateReq, plan, state)
 	policyID := resourcePolicyIDUpdate(plan.ResourcePolicyID, state.ResourcePolicyID)
 	if policyID != nil {
 		if r.checkSharedPolicy(ctx, plan.ResourcePolicyID, &resp.Diagnostics); resp.Diagnostics.HasError() {
@@ -718,6 +721,15 @@ func (r *HTTPResource) ImportState(ctx context.Context, req resource.ImportState
 	state = applyHTTPResourceResponse(state, res)
 	resp.Diagnostics.Append(r.refreshAIProviders(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// moveToNewSubdomain sends domain_id when the subdomain changes: only then
+// does the server rebuild the full domain (and its certificate). Sent on
+// that change only, so other updates keep their payload.
+func moveToNewSubdomain(req *client.UpdateResourceRequest, plan, state HTTPResourceModel) {
+	if !plan.Subdomain.Equal(state.Subdomain) && !plan.DomainID.IsNull() && !plan.DomainID.IsUnknown() {
+		req.DomainID = plan.DomainID.ValueString()
+	}
 }
 
 // buildHTTPResourceUpdateRequest builds an UpdateResourceRequest from the model,
