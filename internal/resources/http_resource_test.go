@@ -798,3 +798,47 @@ func TestMoveToNewSubdomain(t *testing.T) {
 		}
 	}
 }
+
+func TestMoveToNewSubdomainDropsUnchangedMatchBaseDomain(t *testing.T) {
+	state := HTTPResourceModel{Subdomain: types.StringValue("app"), MatchBaseDomain: types.BoolValue(false)}
+	f := false
+	req := &client.UpdateResourceRequest{MatchBaseDomain: &f}
+	moveToNewSubdomain(req, state, state)
+	if req.MatchBaseDomain != nil {
+		t.Fatal("unchanged match_base_domain sent")
+	}
+	plan := state
+	plan.MatchBaseDomain = types.BoolValue(true)
+	req = &client.UpdateResourceRequest{MatchBaseDomain: &f}
+	moveToNewSubdomain(req, plan, state)
+	if req.MatchBaseDomain == nil {
+		t.Fatal("changed match_base_domain dropped")
+	}
+}
+
+// match_base_domain is 1.26+: unset, it stays out of the body (1.25 refuses the key).
+func TestBuildHTTPResourceUpdateRequestMatchBaseDomain(t *testing.T) {
+	plan := HTTPResourceModel{Name: types.StringValue("r"), MatchBaseDomain: types.BoolUnknown()}
+	if buildHTTPResourceUpdateRequest(plan).MatchBaseDomain != nil {
+		t.Fatal("unknown match_base_domain sent")
+	}
+	plan.MatchBaseDomain = types.BoolNull()
+	if buildHTTPResourceUpdateRequest(plan).MatchBaseDomain != nil {
+		t.Fatal("null match_base_domain sent")
+	}
+	plan.MatchBaseDomain = types.BoolValue(false)
+	if v := buildHTTPResourceUpdateRequest(plan).MatchBaseDomain; v == nil || *v {
+		t.Fatal("false match_base_domain not sent")
+	}
+}
+
+func TestSubdomainRegexp(t *testing.T) {
+	for s, ok := range map[string]bool{
+		"app": true, "app.team": true, "*": true, "*.apps": true, "*.a.b": true,
+		"App": false, "a.*": false, "*app": false, "-a": false, "a..b": false, "*.": false, "": false,
+	} {
+		if subdomainRegexp.MatchString(s) != ok {
+			t.Errorf("%q: match=%v, want %v", s, !ok, ok)
+		}
+	}
+}

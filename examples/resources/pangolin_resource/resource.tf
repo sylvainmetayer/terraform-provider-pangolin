@@ -12,6 +12,17 @@ resource "pangolin_resource" "web" {
   sso       = false # public access, no Pangolin authentication
 }
 
+# Wildcard HTTP resource (enterprise; the domain needs a wildcard
+# certificate). match_base_domain (Pangolin 1.26.0+) also serves the
+# host under the wildcard: *.apps.example.com and apps.example.com.
+resource "pangolin_resource" "apps" {
+  name              = "apps"
+  subdomain         = "*.apps"
+  domain_id         = data.pangolin_domains.all.domains[0].domain_id
+  mode              = "http"
+  match_base_domain = true
+}
+
 # HTTP resource with 1.19+ options: injected headers, host-header
 # override, PROXY-protocol upstream, post-auth landing page.
 resource "pangolin_resource" "web_advanced" {

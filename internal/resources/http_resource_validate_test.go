@@ -176,3 +176,33 @@ func TestHTTPResource_RollBackCreate_KeepsIDWhenDeleteFails(t *testing.T) {
 		t.Errorf("id in state = %v, want 42", id)
 	}
 }
+
+func TestHTTPResource_ValidateConfig_MatchBaseDomain(t *testing.T) {
+	str := func(v any) tftypes.Value { return tftypes.NewValue(tftypes.String, v) }
+	cases := []struct {
+		name      string
+		mode, sub tftypes.Value
+		wantErr   bool
+	}{
+		{"http wildcard", str("http"), str("*.apps"), false},
+		{"default mode bare wildcard", str(nil), str("*"), false},
+		{"unknown subdomain", str("http"), str(tftypes.UnknownValue), false},
+		{"plain subdomain", str("http"), str("apps"), true},
+		{"no subdomain", str("http"), str(nil), true},
+		{"tcp", str("tcp"), str("*.apps"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := httpResourceConfig(t, map[string]tftypes.Value{
+				"mode":              tc.mode,
+				"subdomain":         tc.sub,
+				"match_base_domain": tftypes.NewValue(tftypes.Bool, true),
+			})
+			var resp resource.ValidateConfigResponse
+			(&HTTPResource{}).ValidateConfig(context.Background(), resource.ValidateConfigRequest{Config: cfg}, &resp)
+			if resp.Diagnostics.HasError() != tc.wantErr {
+				t.Fatalf("error=%v, want %v: %v", resp.Diagnostics.HasError(), tc.wantErr, resp.Diagnostics)
+			}
+		})
+	}
+}
