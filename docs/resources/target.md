@@ -33,6 +33,7 @@ resource "pangolin_target" "healthchecked" {
   method      = "http"
 
   hc_enabled             = true
+  hc_hostname            = "192.168.1.11"
   hc_path                = "/health"
   hc_method              = "GET"
   hc_status              = 200
@@ -65,7 +66,7 @@ resource "pangolin_target" "healthchecked" {
 - `hc_follow_redirects` (Boolean) Whether the probe follows HTTP redirects.
 - `hc_headers` (Attributes List) Request headers to set on the probe - list of `{name, value}` objects. Leave unset (or `[]`) to keep the server default (no probe headers). Cannot be marked Computed because the Go slice model type in the plugin framework does not carry an "unknown" sentinel. (see [below for nested schema](#nestedatt--hc_headers))
 - `hc_healthy_threshold` (Number) Consecutive successful probes required to mark the target healthy.
-- `hc_hostname` (String) `Host` header value used by the probe.
+- `hc_hostname` (String) Host the probe connects to. Required when `hc_enabled = true`.
 - `hc_interval` (Number) Probe interval in seconds while the target is healthy.
 - `hc_method` (String) HTTP method used by the probe (e.g. `GET`, `HEAD`).
 - `hc_mode` (String) Health-check mode (e.g. `http`, `tcp`).

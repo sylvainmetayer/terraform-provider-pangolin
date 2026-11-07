@@ -3,10 +3,10 @@ resource "pangolin_role" "developers" {
   description = "Access for the development team"
 
   # SSH bastion: allow members to open SSH sessions through Pangolin,
-  # with restricted sudo and explicit Unix groups on the target host.
+  # with command-restricted sudo and explicit Unix groups on the target host.
   allow_ssh           = true
   ssh_create_home_dir = true
-  ssh_sudo_mode       = "restricted"
+  ssh_sudo_mode       = "commands"
   ssh_sudo_commands = [
     "/usr/bin/systemctl restart nginx",
     "/usr/bin/journalctl",

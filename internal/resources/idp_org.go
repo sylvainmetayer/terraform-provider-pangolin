@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -114,7 +115,33 @@ func (r *IDPOrgResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	resp.Diagnostics.Append(r.fillUnknownMappings(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// fillUnknownMappings resolves an unset (unknown) mapping from what the server
+// stored. Known planned values are left alone so a mismatch still surfaces.
+func (r *IDPOrgResource) fillUnknownMappings(ctx context.Context, m *IDPOrgModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if !m.RoleMapping.IsUnknown() && !m.OrgMapping.IsUnknown() {
+		return diags
+	}
+	policy, err := r.client.GetIDPOrgPolicy(ctx, int(m.IDPId.ValueInt64()), m.OrgID.ValueString())
+	if err != nil {
+		diags.AddError("Failed to read IDP org policy", err.Error())
+		return diags
+	}
+	if m.RoleMapping.IsUnknown() {
+		m.RoleMapping = types.StringValue(policy.RoleMapping)
+	}
+	if m.OrgMapping.IsUnknown() {
+		m.OrgMapping = types.StringValue(policy.OrgMapping)
+	}
+	return diags
 }
 
 func (r *IDPOrgResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -153,6 +180,11 @@ func (r *IDPOrgResource) Update(ctx context.Context, req resource.UpdateRequest,
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update IDP org policy", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(r.fillUnknownMappings(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 

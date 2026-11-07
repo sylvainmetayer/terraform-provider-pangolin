@@ -24,9 +24,24 @@ import (
 )
 
 var (
-	_ resource.Resource                = &TargetResource{}
-	_ resource.ResourceWithImportState = &TargetResource{}
+	_ resource.Resource                   = &TargetResource{}
+	_ resource.ResourceWithImportState    = &TargetResource{}
+	_ resource.ResourceWithValidateConfig = &TargetResource{}
 )
+
+// ValidateConfig mirrors the server, which refuses an enabled health
+// check without hc_hostname (every version since 1.20).
+func (r *TargetResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var enabled types.Bool
+	var hostname types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_enabled"), &enabled)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_hostname"), &hostname)...)
+	if resp.Diagnostics.HasError() || !enabled.ValueBool() || !hostname.IsNull() {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(path.Root("hc_hostname"), "Missing hc_hostname",
+		"Pangolin requires `hc_hostname` when `hc_enabled = true`: set the host the probe connects to.")
+}
 
 // TargetResource defines the resource implementation.
 type TargetResource struct {
@@ -182,7 +197,7 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"hc_hostname": schema.StringAttribute{
-				Description: "`Host` header value used by the probe.",
+				Description: "Host the probe connects to. Required when `hc_enabled = true`.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{

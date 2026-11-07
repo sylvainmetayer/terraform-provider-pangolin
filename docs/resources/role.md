@@ -18,10 +18,10 @@ resource "pangolin_role" "developers" {
   description = "Access for the development team"
 
   # SSH bastion: allow members to open SSH sessions through Pangolin,
-  # with restricted sudo and explicit Unix groups on the target host.
+  # with command-restricted sudo and explicit Unix groups on the target host.
   allow_ssh           = true
   ssh_create_home_dir = true
-  ssh_sudo_mode       = "restricted"
+  ssh_sudo_mode       = "commands"
   ssh_sudo_commands = [
     "/usr/bin/systemctl restart nginx",
     "/usr/bin/journalctl",
@@ -51,11 +51,11 @@ resource "pangolin_role" "auditors" {
 
 - `allow_ssh` (Boolean) Whether members of this role may open SSH sessions through the Pangolin bastion.
 - `description` (String) The description of the role.
-- `require_device_approval` (Boolean) Require an administrator to approve each new device before its user can use this role.
-- `ssh_create_home_dir` (Boolean) Whether to create the user's home directory on the host when they first log in.
-- `ssh_sudo_commands` (List of String) List of sudo command patterns allowed when `ssh_sudo_mode = "restricted"`. Ignored otherwise.
-- `ssh_sudo_mode` (String) How sudo is gated for SSH sessions opened by members of this role. `none` disables sudo, `full` allows any command, `restricted` allows only `ssh_sudo_commands`.
-- `ssh_unix_groups` (List of String) Unix groups added to the user account on the host when they log in via SSH.
+- `require_device_approval` (Boolean) Require an administrator to approve each new device before its user can use this role. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `ssh_create_home_dir` (Boolean) Whether to create the user's home directory on the host when they first log in. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `ssh_sudo_commands` (List of String) List of sudo command patterns allowed when `ssh_sudo_mode = "commands"`. Ignored otherwise. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `ssh_sudo_mode` (String) How sudo is gated for SSH sessions opened by members of this role. `none` disables sudo, `full` allows any command, `commands` allows only `ssh_sudo_commands`. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
+- `ssh_unix_groups` (List of String) Unix groups added to the user account on the host when they log in via SSH. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.
 
 ### Read-Only
 
