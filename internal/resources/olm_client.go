@@ -22,6 +22,7 @@ import (
 var (
 	_ resource.Resource                = &OLMClientResource{}
 	_ resource.ResourceWithImportState = &OLMClientResource{}
+	_ resource.ResourceWithModifyPlan  = &OLMClientResource{}
 )
 
 // OLMClientResource manages a Pangolin OLM client device.
@@ -31,14 +32,15 @@ type OLMClientResource struct {
 
 // OLMClientResourceModel describes the resource data model.
 type OLMClientResourceModel struct {
-	ID       types.Int64  `tfsdk:"id"`
-	NiceID   types.String `tfsdk:"nice_id"`
-	OlmID    types.String `tfsdk:"olm_id"`
-	Name     types.String `tfsdk:"name"`
-	Online   types.Bool   `tfsdk:"online"`
-	Archived types.Bool   `tfsdk:"archived"`
-	Blocked  types.Bool   `tfsdk:"blocked"`
-	Secret   types.String `tfsdk:"secret"`
+	ID              types.Int64  `tfsdk:"id"`
+	NiceID          types.String `tfsdk:"nice_id"`
+	OlmID           types.String `tfsdk:"olm_id"`
+	Name            types.String `tfsdk:"name"`
+	Online          types.Bool   `tfsdk:"online"`
+	Archived        types.Bool   `tfsdk:"archived"`
+	Blocked         types.Bool   `tfsdk:"blocked"`
+	Secret          types.String `tfsdk:"secret"`
+	RotationTrigger types.String `tfsdk:"rotation_trigger"`
 }
 
 // NewOLMClientResource returns a new resource factory.
@@ -101,6 +103,7 @@ func (r *OLMClientResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
 			},
+			"rotation_trigger": rotationTriggerAttribute("secret", "OLM"),
 			"secret": schema.StringAttribute{
 				Description: "The client secret. Only available at creation time; stored in state.",
 				Computed:    true,
@@ -111,6 +114,10 @@ func (r *OLMClientResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			},
 		},
 	}
+}
+
+func (r *OLMClientResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	markSecretUnknownOnRotation(ctx, req, resp, "secret")
 }
 
 func (r *OLMClientResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -232,6 +239,27 @@ func (r *OLMClientResource) Update(ctx context.Context, req resource.UpdateReque
 
 	// olmId is immutable, so its current value is whatever is already in state.
 	plan.OlmID = state.OlmID
+
+	if rotationRequested(plan.RotationTrigger, state.RotationTrigger) {
+		// The rename/lifecycle changes above are already applied: if the rotation
+		// fails, persist them with the old secret and trigger so the next apply
+		// retries only the rotation.
+		failedRotation := func(summary string, err error) {
+			plan.Secret, plan.RotationTrigger = state.Secret, state.RotationTrigger
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			resp.Diagnostics.AddError(summary, err.Error())
+		}
+		defaults, err := r.client.GetClientDefaults(ctx)
+		if err != nil {
+			failedRotation("Failed to generate a new client secret", err)
+			return
+		}
+		if err := r.client.ReKeyClient(ctx, int(plan.ID.ValueInt64()), defaults.OlmSecret); err != nil {
+			failedRotation("Failed to rotate client secret", err)
+			return
+		}
+		plan.Secret = types.StringValue(defaults.OlmSecret)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

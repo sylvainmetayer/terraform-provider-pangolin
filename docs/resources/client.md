@@ -41,6 +41,7 @@ resource "pangolin_client" "retired" {
 
 - `archived` (Boolean) Whether the client is archived. Archived clients are kept for audit but cannot connect. Defaults to `false`.
 - `blocked` (Boolean) Whether the client is blocked. Blocked clients are denied from connecting until unblocked. Defaults to `false`.
+- `rotation_trigger` (String) Arbitrary value that triggers a rotation of `secret` whenever it changes (for example `"2026-11"`). On change, a new OLM secret is generated and `secret` is updated in state. The new secret takes effect immediately: Pangolin disconnects the running tunnel and the old secret is rejected, so the connector stays down until it is restarted with the new secret. Changing it from unset to a value also rotates; removing it does not. Not read back from the API, so it is unset after `terraform import`.
 
 ### Read-Only
 
