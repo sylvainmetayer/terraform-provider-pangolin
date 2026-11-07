@@ -40,6 +40,10 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		}},
 		{"CreateVirtualAPIKey", func(c *Client) error { _, err := c.CreateVirtualAPIKey(ctx, &VirtualAPIKeyRequest{}); return err }},
 		{"CreateAIBudget", func(c *Client) error { _, err := c.CreateAIBudget(ctx, &AIBudgetRequest{}); return err }},
+		{"CreateCustomDNSRecord", func(c *Client) error {
+			_, err := c.CreateCustomDNSRecord(ctx, "d", &CustomDNSRecordRequest{})
+			return err
+		}},
 		{"CreateEventStreamingDestination", func(c *Client) error {
 			_, err := c.CreateEventStreamingDestination(ctx, &EventStreamingDestinationRequest{})
 			return err
