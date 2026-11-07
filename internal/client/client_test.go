@@ -1221,6 +1221,26 @@ func TestUserHasRole_HitAndMiss(t *testing.T) {
 	}
 }
 
+// GET /org/{org}/user/{id} answers the user at the top of data, keyed
+// by userId (no "user" wrapper, no "id").
+func TestGetUser_ReadsUserID(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"userId": "u-1", "username": "alice", "email": "alice@example.com",
+			"name": nil, "type": "oidc", "idpId": 3, "autoProvisioned": true,
+			"roles": []map[string]any{{"roleId": 2, "name": "Member"}},
+		})
+	})
+	u, err := c.GetUser(context.Background(), "u-1")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if u.UserID != "u-1" || u.Email == nil || *u.Email != "alice@example.com" || u.Name != nil ||
+		u.IdpID == nil || *u.IdpID != 3 || !u.AutoProvisioned || len(u.Roles) != 1 || u.Roles[0].RoleID != 2 {
+		t.Errorf("GetUser = %+v", u)
+	}
+}
+
 // --- Resource whitelist GET tests ---
 
 func TestListResourceWhitelist_EmptyList(t *testing.T) {

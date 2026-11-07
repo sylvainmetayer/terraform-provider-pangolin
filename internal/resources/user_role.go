@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -148,13 +149,23 @@ func (r *UserRoleResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	if err := r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), int(state.RoleID.ValueInt64())); err != nil {
-		if errors.Is(err, client.ErrNotFound) {
-			// Already detached / user gone - treat as success.
-			return
-		}
-		resp.Diagnostics.AddError("Failed to remove role from user", err.Error())
-		return
+	err := r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), int(state.RoleID.ValueInt64()))
+	removeRoleDiags(err, &resp.Diagnostics)
+}
+
+// removeRoleDiags reports the outcome of detaching a role from a user.
+// A gone user or binding is success. The server refuses to remove a
+// user's last role; destroy then drops the binding from the state with a
+// warning instead of failing for good.
+func removeRoleDiags(err error, diags *diag.Diagnostics) {
+	switch {
+	case err == nil, errors.Is(err, client.ErrNotFound):
+	case strings.Contains(err.Error(), "at least one role"):
+		diags.AddWarning("User keeps the role",
+			"Pangolin requires every user to hold at least one role, and this is the user's last one. "+
+				"The assignment is dropped from the state but stays on the server.")
+	default:
+		diags.AddError("Failed to remove role from user", err.Error())
 	}
 }
 

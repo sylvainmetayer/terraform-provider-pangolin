@@ -3,20 +3,26 @@
 page_title: "pangolin_user Resource - pangolin"
 subcategory: ""
 description: |-
-  Manages a user within a Pangolin organization. Typically used for OIDC-provisioned users.
+  Manages an OIDC user of a Pangolin organization. The identity provider (idp_id) must be linked to the org, for example with pangolin_idp_org.
 ---
 
 # pangolin_user (Resource)
 
-Manages a user within a Pangolin organization. Typically used for OIDC-provisioned users.
+Manages an OIDC user of a Pangolin organization. The identity provider (`idp_id`) must be linked to the org, for example with `pangolin_idp_org`.
 
 ## Example Usage
 
 ```terraform
-resource "pangolin_user" "example" {
+# OIDC user, signing in through an identity provider linked to the org.
+resource "pangolin_user" "alice" {
+  username = "alice"
   email    = "alice@example.com"
-  password = var.alice_password
   name     = "Alice"
+  idp_id   = pangolin_idp.authentik.id
+  role_id  = pangolin_role.developers.id
+
+  # The IdP must be linked to the org before users can be added to it.
+  depends_on = [pangolin_idp_org.authentik]
 }
 ```
 
@@ -25,14 +31,15 @@ resource "pangolin_user" "example" {
 
 ### Required
 
+- `idp_id` (Number) ID of the identity provider the user signs in with. `oidc` is the only user type the server accepts, and it needs an IdP.
 - `role_id` (Number) The role ID to assign to the user.
 - `username` (String) The username.
 
 ### Optional
 
 - `auto_provisioned` (Boolean) Whether the user was auto-provisioned.
-- `email` (String) The user email address.
-- `name` (String) The display name of the user.
+- `email` (String) The user email address. Set when the user is created: Pangolin has no API to change it.
+- `name` (String) The display name of the user. Set when the user is created: Pangolin has no API to change it.
 - `type` (String) The user type: 'oidc' or 'internal'. Defaults to 'oidc'.
 
 ### Read-Only

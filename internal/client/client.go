@@ -1673,20 +1673,15 @@ func (c *Client) ListRoles(ctx context.Context) ([]Role, error) {
 	return listOrg[Role](ctx, c, "roles", "roles")
 }
 
-// AddUserToRole assigns a user to a role at organization level.
+// AddUserToRole sets the user's role: the server replaces every other
+// role the user holds in the org with this one.
 func (c *Client) AddUserToRole(ctx context.Context, roleID int, userID string) error {
 	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/role/%d/add/%s", roleID, userID), nil)
 	return err
 }
 
-// RemoveUserFromRole removes a user from a role at organization level.
-func (c *Client) RemoveUserFromRole(ctx context.Context, roleID int, userID string) error {
-	_, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/role/%d/remove/%s", roleID, userID), nil)
-	return err
-}
-
 // AddRoleToUser binds an additional role to a user (cumulative).
-// Distinct from AddUserToRole / POST /role/{id}/users/add, which the
+// Distinct from AddUserToRole / POST /role/{id}/add/{user}, which the
 // Pangolin server treats as a single-role assignment endpoint -
 // calling it strips the user's other roles. Use this when you want a
 // user to hold *multiple* roles simultaneously, e.g. Member + Admin.
@@ -1722,27 +1717,6 @@ func (c *Client) UserHasRole(ctx context.Context, userID string, roleID int) (bo
 		return false, nil
 	}
 	return false, fmt.Errorf("user %s: %w", userID, ErrNotFound)
-}
-
-// ListRoleUsers retrieves all users assigned to a role.
-func (c *Client) ListRoleUsers(ctx context.Context, roleID int) ([]string, error) {
-	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/role/%d/users", roleID), nil)
-	if err != nil {
-		return nil, err
-	}
-	var result struct {
-		Users []struct {
-			UserID string `json:"userId"`
-		} `json:"users"`
-	}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse role users: %w", err)
-	}
-	users := make([]string, len(result.Users))
-	for i, u := range result.Users {
-		users[i] = u.UserID
-	}
-	return users, nil
 }
 
 // AddRoleToResource assigns a role to an HTTP resource.
@@ -1894,8 +1868,9 @@ type User struct {
 	Roles            []UserRoleBinding `json:"roles,omitempty"`
 }
 
-// UserByUsernameResponse mirrors the user-by-username payload, which
-// uses `userId` (not `id`) as the primary key field.
+// UserByUsernameResponse mirrors the single-user payload of GET
+// /org/{org}/user/{id} and user-by-username, which use `userId` (not
+// `id`) as the primary key field.
 type UserByUsernameResponse struct {
 	UserID           string            `json:"userId"`
 	OrgID            string            `json:"orgId"`
@@ -1905,6 +1880,8 @@ type UserByUsernameResponse struct {
 	Type             string            `json:"type"`
 	IsOwner          bool              `json:"isOwner"`
 	TwoFactorEnabled bool              `json:"twoFactorEnabled"`
+	AutoProvisioned  bool              `json:"autoProvisioned"`
+	IdpID            *int              `json:"idpId"`
 	Roles            []UserRoleBinding `json:"roles,omitempty"`
 }
 
@@ -3142,43 +3119,25 @@ type UpdateUserRequest struct {
 	AutoProvisioned bool `json:"autoProvisioned"`
 }
 
-// CreateUser creates a new user in the organization.
-func (c *Client) CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error) {
-	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/user", c.OrgID), req)
-	if err != nil {
-		return nil, err
-	}
-	var result struct {
-		User User `json:"user"`
-	}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		// Try direct unmarshal
-		var user User
-		if err2 := json.Unmarshal(resp.Data, &user); err2 != nil {
-			return nil, fmt.Errorf("failed to parse user: %w", err)
-		}
-		return &user, nil
-	}
-	return &result.User, nil
+// CreateUser creates a new user in the organization. The server answers
+// with an empty object, so callers look the user up by username and IdP.
+func (c *Client) CreateUser(ctx context.Context, req *CreateUserRequest) error {
+	_, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/org/%s/user", c.OrgID), req)
+	return err
 }
 
-// GetUser retrieves a user by ID.
-func (c *Client) GetUser(ctx context.Context, userID string) (*User, error) {
+// GetUser retrieves a user by ID. The payload is the same as
+// user-by-username, keyed by `userId`.
+func (c *Client) GetUser(ctx context.Context, userID string) (*UserByUsernameResponse, error) {
 	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/org/%s/user/%s", c.OrgID, userID), nil)
 	if err != nil {
 		return nil, err
 	}
-	var result struct {
-		User User `json:"user"`
+	var user UserByUsernameResponse
+	if err := json.Unmarshal(resp.Data, &user); err != nil {
+		return nil, fmt.Errorf("failed to parse user: %w", err)
 	}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		var user User
-		if err2 := json.Unmarshal(resp.Data, &user); err2 != nil {
-			return nil, fmt.Errorf("failed to parse user: %w", err)
-		}
-		return &user, nil
-	}
-	return &result.User, nil
+	return &user, nil
 }
 
 // UpdateUser updates a user's auto-provisioned status.

@@ -116,7 +116,8 @@ func (r *RoleUserResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	users, err := r.client.ListRoleUsers(ctx, roleID)
+	// No endpoint lists a role's users; read the user's roles instead.
+	has, err := r.client.UserHasRole(ctx, state.UserID.ValueString(), roleID)
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			resp.State.RemoveResource(ctx)
@@ -125,16 +126,12 @@ func (r *RoleUserResource) Read(ctx context.Context, req resource.ReadRequest, r
 		resp.Diagnostics.AddError("Failed to read role users", err.Error())
 		return
 	}
-
-	for _, uid := range users {
-		if uid == state.UserID.ValueString() {
-			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-			return
-		}
+	if !has {
+		// Association no longer exists - remove from state.
+		resp.State.RemoveResource(ctx)
+		return
 	}
-
-	// Association no longer exists - remove from state.
-	resp.State.RemoveResource(ctx)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *RoleUserResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -154,10 +151,8 @@ func (r *RoleUserResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	if err := r.client.RemoveUserFromRole(ctx, roleID, state.UserID.ValueString()); err != nil {
-		resp.Diagnostics.AddError("Failed to remove user from role", err.Error())
-		return
-	}
+	// No /role/{id}/remove route exists; detach the role from the user.
+	removeRoleDiags(r.client.RemoveRoleFromUser(ctx, state.UserID.ValueString(), roleID), &resp.Diagnostics)
 }
 
 func (r *RoleUserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

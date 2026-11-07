@@ -28,7 +28,7 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateAPIKey", func(c *Client) error { _, err := c.CreateAPIKey(ctx, &CreateAPIKeyRequest{}); return err }},
 		{"CreateOLMClient", func(c *Client) error { _, err := c.CreateOLMClient(ctx, &CreateOLMClientRequest{}); return err }},
 		{"CreateOrg", func(c *Client) error { _, err := c.CreateOrg(ctx, &CreateOrgRequest{}); return err }},
-		{"CreateUser", func(c *Client) error { _, err := c.CreateUser(ctx, &CreateUserRequest{}); return err }},
+		{"CreateUser", func(c *Client) error { return c.CreateUser(ctx, &CreateUserRequest{}) }},
 		{"ApplyBlueprint", func(c *Client) error { return c.ApplyBlueprint(ctx, "e30=") }},
 		{"CreateIDP", func(c *Client) error { _, err := c.CreateIDP(ctx, &CreateIDPRequest{}); return err }},
 		{"CreateOrgIDP", func(c *Client) error { _, err := c.CreateOrgIDP(ctx, "org", &CreateIDPRequest{}); return err }},
