@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -793,5 +794,41 @@ func TestRoleImport_ReadsAllowSSH(t *testing.T) {
 	}
 	if !got.AllowSSH.ValueBool() || got.OrgName.ValueString() != "Org" || !got.ReplacementRoleID.IsNull() {
 		t.Errorf("imported state = %+v", got)
+	}
+}
+
+// A state written before org_name was read holds "": planning it would fail
+// the apply ("was \"\", now \"Org\"") when the update reads the real name,
+// so it stays unknown. A non-empty state is reused: no diff on later plans.
+func TestRoleOrgName_EmptyStateStaysUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		state types.String
+		want  types.String
+	}{
+		{types.StringValue(""), types.StringUnknown()},
+		{types.StringValue("Org"), types.StringValue("Org")},
+		{types.StringNull(), types.StringUnknown()},
+	} {
+		req := planmodifier.StringRequest{StateValue: tc.state, PlanValue: types.StringUnknown(), ConfigValue: types.StringNull()}
+		resp := planmodifier.StringResponse{PlanValue: req.PlanValue}
+		useNonEmptyStateForUnknown{}.PlanModifyString(context.Background(), req, &resp)
+		if !resp.PlanValue.Equal(tc.want) {
+			t.Errorf("state %v: plan = %v, want %v", tc.state, resp.PlanValue, tc.want)
+		}
+	}
+}
+
+// Update from an old state (org_name "") with org_name left unknown by the
+// plan, as the modifier above does: the new state holds the real name.
+func TestRoleUpdate_FillsOrgNameFromOldState(t *testing.T) {
+	f := &fakeRoleServer{t: t, description: "old"}
+	prior := role5State(false)
+	prior.OrgName = types.StringValue("")
+	planned := prior
+	planned.Description = types.StringValue("new")
+	planned.OrgName = types.StringUnknown()
+	got := updateRole(t, &RoleResource{client: f.client()}, prior, planned)
+	if got.OrgName.ValueString() != "Org" {
+		t.Errorf("org_name = %v, want Org", got.OrgName)
 	}
 }
