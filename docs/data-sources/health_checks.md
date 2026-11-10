@@ -4,12 +4,15 @@ page_title: "pangolin_health_checks Data Source - pangolin"
 subcategory: ""
 description: |-
   Lists the health checks of the organization, newest first: the standalone ones (managed by pangolin_health_check) and the probes attached to targets (standalone = false, with the resource_* attributes set). All filters are optional and applied server-side.
+  **Note:** the probe of an AI provider target reads as `standalone = true`: the API links probes to resources only.
   **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0).
 ---
 
 # pangolin_health_checks (Data Source)
 
 Lists the health checks of the organization, newest first: the standalone ones (managed by `pangolin_health_check`) and the probes attached to targets (`standalone = false`, with the `resource_*` attributes set). All filters are optional and applied server-side.
+
+> **Note:** the probe of an AI provider target reads as `standalone = true`: the API links probes to resources only.
 
 > **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0).
 

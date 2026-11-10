@@ -106,7 +106,8 @@ func (r *AIProviderResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"routing_mode": schema.StringAttribute{
 				Description: "`url` sends requests to `upstream_url`; `target` (custom providers only) routes them to site " +
-					"targets. Defaults to `url`.",
+					"targets, declared with `pangolin_target` and `ai_provider_id`. A provider in `target` mode without an " +
+					"enabled, reachable target fails every request (HTTP 500). Defaults to `url`.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},

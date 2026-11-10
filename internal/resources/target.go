@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -29,18 +30,41 @@ var (
 	_ resource.ResourceWithValidateConfig = &TargetResource{}
 )
 
+// aiTargetIgnoredAttrs are stored by the server on an AI provider target
+// but only read by the Traefik config, which joins targets to resources:
+// the AI gateway routes on ip, port, method, enabled and the health check.
+var aiTargetIgnoredAttrs = []string{"path", "path_match_type", "rewrite_path", "rewrite_path_type", "priority"}
+
 // ValidateConfig mirrors the server, which refuses an enabled health
-// check without hc_hostname (every version since 1.20).
+// check without hc_hostname (every version since 1.20), and refuses the
+// routing fields an AI provider target would silently ignore.
 func (r *TargetResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var enabled types.Bool
 	var hostname types.String
+	var resourceID types.Int64
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_enabled"), &enabled)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_hostname"), &hostname)...)
-	if resp.Diagnostics.HasError() || !enabled.ValueBool() || !hostname.IsNull() {
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("resource_id"), &resourceID)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.AddAttributeError(path.Root("hc_hostname"), "Missing hc_hostname",
-		"Pangolin requires `hc_hostname` when `hc_enabled = true`: set the host the probe connects to.")
+	if enabled.ValueBool() && hostname.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("hc_hostname"), "Missing hc_hostname",
+			"Pangolin requires `hc_hostname` when `hc_enabled = true`: set the host the probe connects to.")
+	}
+	// A null resource_id means an AI provider target (exactly one owner is
+	// required), even while ai_provider_id is still unknown.
+	if !resourceID.IsNull() {
+		return
+	}
+	for _, name := range aiTargetIgnoredAttrs {
+		var v attr.Value
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(name), &v)...)
+		if v != nil && !v.IsNull() && !v.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(path.Root(name), "Unsupported attribute for an AI provider target",
+				fmt.Sprintf("`%s` has no effect on a target with `ai_provider_id`: the AI gateway does not use it.", name))
+		}
+	}
 }
 
 // TargetResource defines the resource implementation.
@@ -56,13 +80,14 @@ type TargetHCHeaderModel struct {
 
 // TargetResourceModel describes the resource data model.
 type TargetResourceModel struct {
-	ID         types.Int64  `tfsdk:"id"`
-	ResourceID types.Int64  `tfsdk:"resource_id"`
-	SiteID     types.Int64  `tfsdk:"site_id"`
-	IP         types.String `tfsdk:"ip"`
-	Port       types.Int64  `tfsdk:"port"`
-	Method     types.String `tfsdk:"method"`
-	Enabled    types.Bool   `tfsdk:"enabled"`
+	ID           types.Int64  `tfsdk:"id"`
+	ResourceID   types.Int64  `tfsdk:"resource_id"`
+	AIProviderID types.Int64  `tfsdk:"ai_provider_id"`
+	SiteID       types.Int64  `tfsdk:"site_id"`
+	IP           types.String `tfsdk:"ip"`
+	Port         types.Int64  `tfsdk:"port"`
+	Method       types.String `tfsdk:"method"`
+	Enabled      types.Bool   `tfsdk:"enabled"`
 
 	// Health-check configuration (all optional + computed)
 	HCEnabled            types.Bool            `tfsdk:"hc_enabled"`
@@ -107,7 +132,9 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 	hcCompPlanModifierInt := int64planmodifier.UseStateForUnknown()
 	hcCompPlanModifierBool := boolplanmodifier.UseStateForUnknown()
 	resp.Schema = schema.Schema{
-		Description: "Manages a Pangolin target (backend endpoint for an HTTP resource). " +
+		Description: "Manages a Pangolin target: the backend endpoint of an HTTP resource (`resource_id`), or of a " +
+			"`custom` AI provider in `routing_mode = \"target\"` (`ai_provider_id`), where the AI gateway spreads " +
+			"requests over the provider's enabled targets. " +
 			"Exposes the full health-check (`hc_*`) and request-routing (`path`, `rewrite_path`, `priority`) " +
 			"configuration accepted by the Pangolin API.\n\n" +
 			"> **Note:** `hc_*` fields are sent only when set. Leaving one unset means the server default applies. " +
@@ -121,8 +148,22 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"resource_id": schema.Int64Attribute{
-				Description: "The ID of the HTTP resource this target belongs to.",
-				Required:    true,
+				Description: "The ID of the HTTP resource this target belongs to. Exactly one of `resource_id` and `ai_provider_id` is required.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					int64validator.ExactlyOneOf(path.MatchRoot("ai_provider_id")),
+				},
+			},
+			"ai_provider_id": schema.Int64Attribute{
+				Description: "The ID of the AI provider this target belongs to (`pangolin_ai_provider.id`). The provider " +
+					"must be of type `custom` with `routing_mode = \"target\"`, and the site must belong to its organization; " +
+					"`method` must be `http` or `https`. The gateway only reaches targets on a site connected through a Gerbil " +
+					"exit node and skips disabled and unhealthy ones; `path`, `path_match_type`, `rewrite_*` and `priority` " +
+					"have no effect there and are refused.",
+				Optional: true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
@@ -189,9 +230,12 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"hc_mode": schema.StringAttribute{
-				Description: "Health-check mode (e.g. `http`, `tcp`).",
-				Optional:    true,
-				Computed:    true,
+				Description: "Health-check mode (e.g. `http`, `tcp`). On a target with `ai_provider_id`, a probe with " +
+					"`hc_mode` set is listed by `pangolin_health_checks` with `standalone = true` and is accepted by a " +
+					"`pangolin_health_check` import: the health-check list route only links probes to resources, not to " +
+					"AI providers. Manage it here only.",
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					hcCompPlanModifierStr,
 				},
@@ -409,7 +453,13 @@ func (r *TargetResource) Create(ctx context.Context, req resource.CreateRequest,
 		&createReq.Path, &createReq.PathMatchType, &createReq.RewritePath, &createReq.RewritePathType,
 		&createReq.Priority)
 
-	target, err := r.client.CreateTarget(ctx, int(plan.ResourceID.ValueInt64()), createReq)
+	var target *client.Target
+	var err error
+	if !plan.AIProviderID.IsNull() {
+		target, err = r.client.CreateAIProviderTarget(ctx, int(plan.AIProviderID.ValueInt64()), createReq)
+	} else {
+		target, err = r.client.CreateTarget(ctx, int(plan.ResourceID.ValueInt64()), createReq)
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create target", err.Error())
 		return
@@ -590,10 +640,16 @@ func targetToModel(t *client.Target, prior TargetResourceModel) TargetResourceMo
 		}
 	}
 	_ = prior
+	// The server sets exactly one owner; the other comes back null.
+	resourceID := types.Int64Null()
+	if t.ProviderID == nil {
+		resourceID = types.Int64Value(int64(t.ResourceID))
+	}
 
 	return TargetResourceModel{
 		ID:                   types.Int64Value(int64(t.TargetID)),
-		ResourceID:           types.Int64Value(int64(t.ResourceID)),
+		ResourceID:           resourceID,
+		AIProviderID:         tfconv.Int64FromIntPtr(t.ProviderID),
 		SiteID:               types.Int64Value(int64(t.SiteID)),
 		IP:                   types.StringValue(t.IP),
 		Port:                 types.Int64Value(int64(t.Port)),

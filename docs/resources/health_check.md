@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a standalone Pangolin health check: a probe run by a site's Newt connector that is not attached to any target. Its health can drive alert rules.
   **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0). The routes do not exist on the OSS build, which answers 404.
+  **Note:** the import refuses a probe attached to a resource target, but cannot recognize the probe of an AI provider target (`pangolin_target` with `ai_provider_id` and `hc_mode`): the API lists it like a standalone one. Do not import it, or two resources would manage the same probe.
   **Note:** Newt silently skips a probe that has no `hostname` or `port`, and an `http` probe that has no `path`. The server only enforces `hostname` when `enabled = true`.
   **Note:** the API cannot clear `port` once set. Removing it from the configuration keeps the last value. Removing `hostname`, `path`, `scheme`, `tls_server_name`, `status` or `headers` clears them on the server.
 ---
@@ -14,6 +15,8 @@ description: |-
 Manages a standalone Pangolin health check: a probe run by a site's Newt connector that is not attached to any target. Its health can drive alert rules.
 
 > **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0). The routes do not exist on the OSS build, which answers 404.
+
+> **Note:** the import refuses a probe attached to a resource target, but cannot recognize the probe of an AI provider target (`pangolin_target` with `ai_provider_id` and `hc_mode`): the API lists it like a standalone one. Do not import it, or two resources would manage the same probe.
 
 > **Note:** Newt silently skips a probe that has no `hostname` or `port`, and an `http` probe that has no `path`. The server only enforces `hostname` when `enabled = true`.
 
@@ -106,6 +109,8 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 
 ```shell
 # Standalone health checks import by numeric ID. Look it up via the
-# pangolin_health_checks data source.
+# pangolin_health_checks data source. The probe of an AI provider target
+# (pangolin_target with ai_provider_id) is listed as standalone too:
+# do not import it, pangolin_target already manages it.
 terraform import pangolin_health_check.example <health_check_id>
 ```
