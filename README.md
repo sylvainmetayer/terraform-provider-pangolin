@@ -8,7 +8,7 @@ This repository is a fork of [stackopshq/terraform-provider-pangolin](https://gi
 
 ## Requirements
 
-- [Terraform](https://www.terraform.io/) >= 1.0 or [OpenTofu](https://opentofu.org/) >= 1.6
+- [Terraform](https://www.terraform.io/) >= 1.0 or [OpenTofu](https://opentofu.org/) >= 1.6; the write-only attributes (`password_wo`, `pincode_wo`), which keep the secret out of the plan and the state, need Terraform >= 1.11 or OpenTofu >= 1.11
 - A Pangolin self-hosted instance with the [Integration API](https://docs.pangolin.net/self-host/advanced/integration-api) enabled
 - Go >= 1.25 (only for building from source, required by `terraform-plugin-framework`)
 
@@ -89,8 +89,8 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_resource_user` | Assign a user to an HTTP resource |
 | `pangolin_resource_whitelist` | Add an email to an HTTP resource whitelist |
 | `pangolin_resource_rule` | Access-control rule for a resource (CIDR, IP, path, country, country exclusion, region, ASN, HTTP method) |
-| `pangolin_resource_password` | Password protection for a resource |
-| `pangolin_resource_pincode` | PIN-code protection for a resource |
+| `pangolin_resource_password` | Password protection for a resource (`password`, or write-only `password_wo`) |
+| `pangolin_resource_pincode` | PIN-code protection for a resource (`pincode`, or write-only `pincode_wo`) |
 | `pangolin_resource_header_auth` | Header-based authentication for a resource |
 | `pangolin_resource_access_token` | Bearer access token bound to an HTTP resource |
 | `pangolin_site_resource_role` | Assign a role to a private site resource |
