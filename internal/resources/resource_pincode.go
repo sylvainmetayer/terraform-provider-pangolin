@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -28,8 +30,10 @@ type ResourcePincodeResource struct {
 
 // ResourcePincodeModel describes the resource data model.
 type ResourcePincodeModel struct {
-	ResourceID types.Int64  `tfsdk:"resource_id"`
-	Pincode    types.String `tfsdk:"pincode"`
+	ResourceID       types.Int64  `tfsdk:"resource_id"`
+	Pincode          types.String `tfsdk:"pincode"`
+	PincodeWO        types.String `tfsdk:"pincode_wo"`
+	PincodeWOVersion types.Int64  `tfsdk:"pincode_wo_version"`
 }
 
 // NewResourcePincodeResource returns a new resource factory.
@@ -44,7 +48,9 @@ func (r *ResourcePincodeResource) Metadata(_ context.Context, req resource.Metad
 func (r *ResourcePincodeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Sets a PIN code for accessing a Pangolin HTTP resource. Destroying this resource removes the PIN code protection.\n\n" +
-			"> **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.",
+			"> **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.\n\n" +
+			"Set either `pincode` (kept in the state) or `pincode_wo` with `pincode_wo_version` (never written to the plan or the state; " +
+			"requires Terraform >= 1.11 or OpenTofu >= 1.11). Change `pincode_wo_version` to send a new `pincode_wo` to Pangolin.",
 		Attributes: map[string]schema.Attribute{
 			"resource_id": schema.Int64Attribute{
 				Description: "The ID of the resource to protect with a PIN code.",
@@ -54,11 +60,31 @@ func (r *ResourcePincodeResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"pincode": schema.StringAttribute{
-				Description: "The PIN code (numeric string, typically 6 digits) required to access the resource.",
-				Required:    true,
-				Sensitive:   true,
+				Description: "The PIN code (numeric string, typically 6 digits) required to access the resource, stored in the state. " +
+					"Exactly one of `pincode` and `pincode_wo` is required.",
+				Optional:  true,
+				Sensitive: true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
+					stringvalidator.ExactlyOneOf(path.MatchRoot("pincode_wo")),
+				},
+			},
+			"pincode_wo": schema.StringAttribute{
+				Description: "Write-only PIN code: sent to Pangolin on create and when `pincode_wo_version` changes, never stored in the plan or the state. " +
+					"Requires Terraform >= 1.11 or OpenTofu >= 1.11.",
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+					stringvalidator.AlsoRequires(path.MatchRoot("pincode_wo_version")),
+				},
+			},
+			"pincode_wo_version": schema.Int64Attribute{
+				Description: "Version of `pincode_wo`. Change it to send the current `pincode_wo` to Pangolin, since a write-only value cannot be compared with the state.",
+				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AlsoRequires(path.MatchRoot("pincode_wo")),
 				},
 			},
 		},
@@ -84,7 +110,11 @@ func (r *ResourcePincodeResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 
-	pin := plan.Pincode.ValueString()
+	pin, diags := secretValue(ctx, req.Config, plan.Pincode, path.Root("pincode_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePincode(ctx, int(plan.ResourceID.ValueInt64()), &pin); err != nil {
 		resp.Diagnostics.AddError("Failed to set resource PIN code", err.Error())
 		return
@@ -127,7 +157,11 @@ func (r *ResourcePincodeResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
-	pin := plan.Pincode.ValueString()
+	pin, diags := secretValue(ctx, req.Config, plan.Pincode, path.Root("pincode_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePincode(ctx, int(plan.ResourceID.ValueInt64()), &pin); err != nil {
 		resp.Diagnostics.AddError("Failed to update resource PIN code", err.Error())
 		return

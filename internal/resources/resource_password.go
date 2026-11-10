@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -28,8 +30,10 @@ type ResourcePasswordResource struct {
 
 // ResourcePasswordModel describes the resource data model.
 type ResourcePasswordModel struct {
-	ResourceID types.Int64  `tfsdk:"resource_id"`
-	Password   types.String `tfsdk:"password"`
+	ResourceID        types.Int64  `tfsdk:"resource_id"`
+	Password          types.String `tfsdk:"password"`
+	PasswordWO        types.String `tfsdk:"password_wo"`
+	PasswordWOVersion types.Int64  `tfsdk:"password_wo_version"`
 }
 
 // NewResourcePasswordResource returns a new resource factory.
@@ -44,7 +48,9 @@ func (r *ResourcePasswordResource) Metadata(_ context.Context, req resource.Meta
 func (r *ResourcePasswordResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Sets a password for accessing a Pangolin HTTP resource. Destroying this resource removes the password protection.\n\n" +
-			"> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues.",
+			"> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues.\n\n" +
+			"Set either `password` (kept in the state) or `password_wo` with `password_wo_version` (never written to the plan or the state; " +
+			"requires Terraform >= 1.11 or OpenTofu >= 1.11). Change `password_wo_version` to send a new `password_wo` to Pangolin.",
 		Attributes: map[string]schema.Attribute{
 			"resource_id": schema.Int64Attribute{
 				Description: "The ID of the resource to protect with a password.",
@@ -54,11 +60,30 @@ func (r *ResourcePasswordResource) Schema(_ context.Context, _ resource.SchemaRe
 				},
 			},
 			"password": schema.StringAttribute{
-				Description: "The password required to access the resource.",
-				Required:    true,
+				Description: "The password required to access the resource, stored in the state. Exactly one of `password` and `password_wo` is required.",
+				Optional:    true,
 				Sensitive:   true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
+					stringvalidator.ExactlyOneOf(path.MatchRoot("password_wo")),
+				},
+			},
+			"password_wo": schema.StringAttribute{
+				Description: "Write-only password: sent to Pangolin on create and when `password_wo_version` changes, never stored in the plan or the state. " +
+					"Requires Terraform >= 1.11 or OpenTofu >= 1.11.",
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+					stringvalidator.AlsoRequires(path.MatchRoot("password_wo_version")),
+				},
+			},
+			"password_wo_version": schema.Int64Attribute{
+				Description: "Version of `password_wo`. Change it to send the current `password_wo` to Pangolin, since a write-only value cannot be compared with the state.",
+				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AlsoRequires(path.MatchRoot("password_wo")),
 				},
 			},
 		},
@@ -84,7 +109,11 @@ func (r *ResourcePasswordResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	pw := plan.Password.ValueString()
+	pw, diags := secretValue(ctx, req.Config, plan.Password, path.Root("password_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePassword(ctx, int(plan.ResourceID.ValueInt64()), &pw); err != nil {
 		resp.Diagnostics.AddError("Failed to set resource password", err.Error())
 		return
@@ -127,7 +156,11 @@ func (r *ResourcePasswordResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	pw := plan.Password.ValueString()
+	pw, diags := secretValue(ctx, req.Config, plan.Password, path.Root("password_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePassword(ctx, int(plan.ResourceID.ValueInt64()), &pw); err != nil {
 		resp.Diagnostics.AddError("Failed to update resource password", err.Error())
 		return

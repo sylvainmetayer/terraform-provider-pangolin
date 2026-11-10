@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Sets a PIN code for accessing a Pangolin HTTP resource. Destroying this resource removes the PIN code protection.
   **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.
+  Set either pincode (kept in the state) or pincode_wo with pincode_wo_version (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change pincode_wo_version to send a new pincode_wo to Pangolin.
 ---
 
 # pangolin_resource_pincode (Resource)
@@ -13,12 +14,22 @@ Sets a PIN code for accessing a Pangolin HTTP resource. Destroying this resource
 
 > **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.
 
+Set either `pincode` (kept in the state) or `pincode_wo` with `pincode_wo_version` (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change `pincode_wo_version` to send a new `pincode_wo` to Pangolin.
+
 ## Example Usage
 
 ```terraform
 resource "pangolin_resource_pincode" "example" {
   resource_id = pangolin_resource.example.id
   pincode     = "123456"
+}
+
+# Write-only (Terraform >= 1.11, OpenTofu >= 1.11): the PIN code is never
+# stored in the plan or the state. Change pincode_wo_version to send a new one.
+resource "pangolin_resource_pincode" "write_only" {
+  resource_id        = pangolin_resource.other.id
+  pincode_wo         = var.resource_pincode
+  pincode_wo_version = 1
 }
 ```
 
@@ -27,8 +38,15 @@ resource "pangolin_resource_pincode" "example" {
 
 ### Required
 
-- `pincode` (String, Sensitive) The PIN code (numeric string, typically 6 digits) required to access the resource.
 - `resource_id` (Number) The ID of the resource to protect with a PIN code.
+
+### Optional
+
+> **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
+
+- `pincode` (String, Sensitive) The PIN code (numeric string, typically 6 digits) required to access the resource, stored in the state. Exactly one of `pincode` and `pincode_wo` is required.
+- `pincode_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only PIN code: sent to Pangolin on create and when `pincode_wo_version` changes, never stored in the plan or the state. Requires Terraform >= 1.11 or OpenTofu >= 1.11.
+- `pincode_wo_version` (Number) Version of `pincode_wo`. Change it to send the current `pincode_wo` to Pangolin, since a write-only value cannot be compared with the state.
 
 ## Import
 
