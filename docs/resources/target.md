@@ -78,7 +78,7 @@ resource "pangolin_target" "ollama" {
 
 ### Optional
 
-- `ai_provider_id` (Number) The ID of the AI provider this target belongs to (`pangolin_ai_provider.id`). The provider must be of type `custom` with `routing_mode = "target"`, and the site must belong to its organization; `method` must be `http` or `https`. The gateway only reaches targets on a site connected through a Gerbil exit node, skips disabled and unhealthy ones, and does not use `path`, `rewrite_*` or `priority`.
+- `ai_provider_id` (Number) The ID of the AI provider this target belongs to (`pangolin_ai_provider.id`). The provider must be of type `custom` with `routing_mode = "target"`, and the site must belong to its organization; `method` must be `http` or `https`. The gateway only reaches targets on a site connected through a Gerbil exit node and skips disabled and unhealthy ones; `path`, `path_match_type`, `rewrite_*` and `priority` have no effect there and are refused.
 - `enabled` (Boolean) Enable or disable this target. Defaults to `true`.
 - `hc_enabled` (Boolean) Whether to enable active health-check probing for this target.
 - `hc_follow_redirects` (Boolean) Whether the probe follows HTTP redirects.
@@ -87,7 +87,7 @@ resource "pangolin_target" "ollama" {
 - `hc_hostname` (String) Host the probe connects to. Required when `hc_enabled = true`.
 - `hc_interval` (Number) Probe interval in seconds while the target is healthy.
 - `hc_method` (String) HTTP method used by the probe (e.g. `GET`, `HEAD`).
-- `hc_mode` (String) Health-check mode (e.g. `http`, `tcp`).
+- `hc_mode` (String) Health-check mode (e.g. `http`, `tcp`). On a target with `ai_provider_id`, a probe with `hc_mode` set is listed by `pangolin_health_checks` with `standalone = true` and is accepted by a `pangolin_health_check` import: the health-check list route only links probes to resources, not to AI providers. Manage it here only.
 - `hc_path` (String) URL path the probe requests (e.g. `/health`).
 - `hc_port` (Number) Port used by the probe. Defaults to the target port when unset.
 - `hc_scheme` (String) Scheme used by the probe (`http` or `https`).

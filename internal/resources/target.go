@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -29,18 +30,41 @@ var (
 	_ resource.ResourceWithValidateConfig = &TargetResource{}
 )
 
+// aiTargetIgnoredAttrs are stored by the server on an AI provider target
+// but only read by the Traefik config, which joins targets to resources:
+// the AI gateway routes on ip, port, method, enabled and the health check.
+var aiTargetIgnoredAttrs = []string{"path", "path_match_type", "rewrite_path", "rewrite_path_type", "priority"}
+
 // ValidateConfig mirrors the server, which refuses an enabled health
-// check without hc_hostname (every version since 1.20).
+// check without hc_hostname (every version since 1.20), and refuses the
+// routing fields an AI provider target would silently ignore.
 func (r *TargetResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var enabled types.Bool
 	var hostname types.String
+	var resourceID types.Int64
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_enabled"), &enabled)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("hc_hostname"), &hostname)...)
-	if resp.Diagnostics.HasError() || !enabled.ValueBool() || !hostname.IsNull() {
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("resource_id"), &resourceID)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.AddAttributeError(path.Root("hc_hostname"), "Missing hc_hostname",
-		"Pangolin requires `hc_hostname` when `hc_enabled = true`: set the host the probe connects to.")
+	if enabled.ValueBool() && hostname.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("hc_hostname"), "Missing hc_hostname",
+			"Pangolin requires `hc_hostname` when `hc_enabled = true`: set the host the probe connects to.")
+	}
+	// A null resource_id means an AI provider target (exactly one owner is
+	// required), even while ai_provider_id is still unknown.
+	if !resourceID.IsNull() {
+		return
+	}
+	for _, name := range aiTargetIgnoredAttrs {
+		var v attr.Value
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(name), &v)...)
+		if v != nil && !v.IsNull() && !v.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(path.Root(name), "Unsupported attribute for an AI provider target",
+				fmt.Sprintf("`%s` has no effect on a target with `ai_provider_id`: the AI gateway does not use it.", name))
+		}
+	}
 }
 
 // TargetResource defines the resource implementation.
@@ -137,7 +161,8 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Description: "The ID of the AI provider this target belongs to (`pangolin_ai_provider.id`). The provider " +
 					"must be of type `custom` with `routing_mode = \"target\"`, and the site must belong to its organization; " +
 					"`method` must be `http` or `https`. The gateway only reaches targets on a site connected through a Gerbil " +
-					"exit node, skips disabled and unhealthy ones, and does not use `path`, `rewrite_*` or `priority`.",
+					"exit node and skips disabled and unhealthy ones; `path`, `path_match_type`, `rewrite_*` and `priority` " +
+					"have no effect there and are refused.",
 				Optional: true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
@@ -205,9 +230,12 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"hc_mode": schema.StringAttribute{
-				Description: "Health-check mode (e.g. `http`, `tcp`).",
-				Optional:    true,
-				Computed:    true,
+				Description: "Health-check mode (e.g. `http`, `tcp`). On a target with `ai_provider_id`, a probe with " +
+					"`hc_mode` set is listed by `pangolin_health_checks` with `standalone = true` and is accepted by a " +
+					"`pangolin_health_check` import: the health-check list route only links probes to resources, not to " +
+					"AI providers. Manage it here only.",
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					hcCompPlanModifierStr,
 				},
