@@ -78,6 +78,8 @@ func (d *HealthChecksDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			"(managed by `pangolin_health_check`) and the probes attached to targets " +
 			"(`standalone = false`, with the `resource_*` attributes set). All filters are optional " +
 			"and applied server-side.\n\n" +
+			"> **Note:** the probe of an AI provider target reads as `standalone = true`: the API links probes to " +
+			"resources only.\n\n" +
 			"> **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0).",
 		Attributes: map[string]schema.Attribute{
 			"query": schema.StringAttribute{

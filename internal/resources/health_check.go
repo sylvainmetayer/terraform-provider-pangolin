@@ -76,6 +76,9 @@ func (r *HealthCheckResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"connector that is not attached to any target. Its health can drive alert rules.\n\n" +
 			"> **Note:** Requires Pangolin Enterprise Edition (written against 1.24.0). The routes do not exist on the " +
 			"OSS build, which answers 404.\n\n" +
+			"> **Note:** the import refuses a probe attached to a resource target, but cannot recognize the probe of " +
+			"an AI provider target (`pangolin_target` with `ai_provider_id` and `hc_mode`): the API lists it like a " +
+			"standalone one. Do not import it, or two resources would manage the same probe.\n\n" +
 			"> **Note:** Newt silently skips a probe that has no `hostname` or `port`, and an `http` " +
 			"probe that has no `path`. The server only enforces `hostname` when `enabled = true`.\n\n" +
 			"> **Note:** the API cannot clear `port` once set. Removing it from the configuration " +
