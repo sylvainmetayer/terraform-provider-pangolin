@@ -839,6 +839,7 @@ type TargetHCHeader struct {
 type Target struct {
 	TargetID            int    `json:"targetId"`
 	ResourceID          int    `json:"resourceId"`
+	ProviderID          *int   `json:"providerId"` // set instead of resourceId on an AI provider target
 	SiteID              int    `json:"siteId"`
 	IP                  string `json:"ip"`
 	Method              string `json:"method"`
@@ -1053,7 +1054,18 @@ type CreateTargetRequest struct {
 
 // CreateTarget creates a new target for a resource.
 func (c *Client) CreateTarget(ctx context.Context, resourceID int, req *CreateTargetRequest) (*Target, error) {
-	resp, err := c.doRequestNoRetry(ctx, "PUT", fmt.Sprintf("/resource/%d/target", resourceID), req)
+	return c.createTarget(ctx, fmt.Sprintf("/resource/%d/target", resourceID), req)
+}
+
+// CreateAIProviderTarget creates a target for a custom AI provider in
+// target routing mode. The server stores it in the same table as resource
+// targets, so it is read, updated and deleted through /target/{id}.
+func (c *Client) CreateAIProviderTarget(ctx context.Context, providerID int, req *CreateTargetRequest) (*Target, error) {
+	return c.createTarget(ctx, fmt.Sprintf("/ai-provider/%d/target", providerID), req)
+}
+
+func (c *Client) createTarget(ctx context.Context, path string, req *CreateTargetRequest) (*Target, error) {
+	resp, err := c.doRequestNoRetry(ctx, "PUT", path, req)
 	if err != nil {
 		return nil, err
 	}

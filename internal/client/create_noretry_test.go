@@ -20,6 +20,10 @@ func TestCreates_NotReplayedOn5xx(t *testing.T) {
 		{"CreateSite", func(c *Client) error { _, err := c.CreateSite(ctx, &CreateSiteRequest{}); return err }},
 		{"CreateResource", func(c *Client) error { _, err := c.CreateResource(ctx, &CreateResourceRequest{}); return err }},
 		{"CreateTarget", func(c *Client) error { _, err := c.CreateTarget(ctx, 1, &CreateTargetRequest{}); return err }},
+		{"CreateAIProviderTarget", func(c *Client) error {
+			_, err := c.CreateAIProviderTarget(ctx, 1, &CreateTargetRequest{})
+			return err
+		}},
 		{"CreateSiteResource", func(c *Client) error {
 			_, err := c.CreateSiteResource(ctx, &CreateSiteResourceRequest{})
 			return err

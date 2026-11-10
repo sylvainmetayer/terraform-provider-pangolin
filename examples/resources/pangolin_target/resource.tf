@@ -29,3 +29,21 @@ resource "pangolin_target" "healthchecked" {
     { name = "X-Probe", value = "pangolin" },
   ]
 }
+
+# Target of a custom AI provider in target routing mode: the AI gateway
+# reaches a self-hosted model server behind the site's tunnel.
+resource "pangolin_ai_provider" "ollama" {
+  name         = "ollama"
+  type         = "custom"
+  routing_mode = "target"
+  auth_type    = "none"
+  capabilities = ["openai_chat", "v1_models"]
+}
+
+resource "pangolin_target" "ollama" {
+  ai_provider_id = pangolin_ai_provider.ollama.id
+  site_id        = pangolin_site.example.id
+  ip             = "192.168.1.20"
+  port           = 11434
+  method         = "http"
+}

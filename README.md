@@ -64,7 +64,7 @@ export PANGOLIN_ORG_ID="your-org-id"
 | `pangolin_site` | Site (Newt tunnel connector) |
 | `pangolin_site_provisioning_key` | Key that lets Newt register new sites by itself |
 | `pangolin_resource` | Public resource: HTTP reverse proxy, browser SSH / RDP / VNC, AI inference endpoint, or raw TCP / UDP |
-| `pangolin_target` | Backend target for an HTTP resource |
+| `pangolin_target` | Backend target for an HTTP resource, or for a custom AI provider in `target` routing mode |
 | `pangolin_health_check` | Standalone health check run by a site (Enterprise) |
 | `pangolin_site_resource` | Private site resource (TCP/UDP/SSH via VPN) |
 | `pangolin_role` | Role |

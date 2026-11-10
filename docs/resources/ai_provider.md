@@ -55,7 +55,7 @@ resource "pangolin_resource" "llm" {
 - `capabilities` (Set of String) The API routes the provider serves: `openai_chat`, `openai_responses`, `anthropic_messages`, `v1_models`, `gemini_generate_content`, `bedrock_model_invoke`, `google_generate_content`, `google_raw_predict`, `bedrock_converse`. Required for `custom` providers; other types default to their own.
 - `enabled` (Boolean) Whether the provider is enabled. Defaults to `true`.
 - `headers` (Attributes List, Sensitive) Extra headers sent upstream - list of `{name, value}` objects. Stored encrypted by the server. (see [below for nested schema](#nestedatt--headers))
-- `routing_mode` (String) `url` sends requests to `upstream_url`; `target` (custom providers only) routes them to site targets. Defaults to `url`.
+- `routing_mode` (String) `url` sends requests to `upstream_url`; `target` (custom providers only) routes them to site targets, declared with `pangolin_target` and `ai_provider_id`. A provider in `target` mode without an enabled, reachable target fails every request (HTTP 500). Defaults to `url`.
 - `skip_tls_verification` (Boolean) Skip TLS certificate verification of the upstream. Defaults to `false`.
 - `upstream_url` (String) The upstream API base URL, e.g. `https://api.openai.com/v1`. Required unless `routing_mode = "target"`.
 

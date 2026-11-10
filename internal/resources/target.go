@@ -56,13 +56,14 @@ type TargetHCHeaderModel struct {
 
 // TargetResourceModel describes the resource data model.
 type TargetResourceModel struct {
-	ID         types.Int64  `tfsdk:"id"`
-	ResourceID types.Int64  `tfsdk:"resource_id"`
-	SiteID     types.Int64  `tfsdk:"site_id"`
-	IP         types.String `tfsdk:"ip"`
-	Port       types.Int64  `tfsdk:"port"`
-	Method     types.String `tfsdk:"method"`
-	Enabled    types.Bool   `tfsdk:"enabled"`
+	ID           types.Int64  `tfsdk:"id"`
+	ResourceID   types.Int64  `tfsdk:"resource_id"`
+	AIProviderID types.Int64  `tfsdk:"ai_provider_id"`
+	SiteID       types.Int64  `tfsdk:"site_id"`
+	IP           types.String `tfsdk:"ip"`
+	Port         types.Int64  `tfsdk:"port"`
+	Method       types.String `tfsdk:"method"`
+	Enabled      types.Bool   `tfsdk:"enabled"`
 
 	// Health-check configuration (all optional + computed)
 	HCEnabled            types.Bool            `tfsdk:"hc_enabled"`
@@ -107,7 +108,9 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 	hcCompPlanModifierInt := int64planmodifier.UseStateForUnknown()
 	hcCompPlanModifierBool := boolplanmodifier.UseStateForUnknown()
 	resp.Schema = schema.Schema{
-		Description: "Manages a Pangolin target (backend endpoint for an HTTP resource). " +
+		Description: "Manages a Pangolin target: the backend endpoint of an HTTP resource (`resource_id`), or of a " +
+			"`custom` AI provider in `routing_mode = \"target\"` (`ai_provider_id`), where the AI gateway spreads " +
+			"requests over the provider's enabled targets. " +
 			"Exposes the full health-check (`hc_*`) and request-routing (`path`, `rewrite_path`, `priority`) " +
 			"configuration accepted by the Pangolin API.\n\n" +
 			"> **Note:** `hc_*` fields are sent only when set. Leaving one unset means the server default applies. " +
@@ -121,8 +124,21 @@ func (r *TargetResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"resource_id": schema.Int64Attribute{
-				Description: "The ID of the HTTP resource this target belongs to.",
-				Required:    true,
+				Description: "The ID of the HTTP resource this target belongs to. Exactly one of `resource_id` and `ai_provider_id` is required.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					int64validator.ExactlyOneOf(path.MatchRoot("ai_provider_id")),
+				},
+			},
+			"ai_provider_id": schema.Int64Attribute{
+				Description: "The ID of the AI provider this target belongs to (`pangolin_ai_provider.id`). The provider " +
+					"must be of type `custom` with `routing_mode = \"target\"`, and the site must belong to its organization; " +
+					"`method` must be `http` or `https`. The gateway only reaches targets on a site connected through a Gerbil " +
+					"exit node, skips disabled and unhealthy ones, and does not use `path`, `rewrite_*` or `priority`.",
+				Optional: true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
@@ -409,7 +425,13 @@ func (r *TargetResource) Create(ctx context.Context, req resource.CreateRequest,
 		&createReq.Path, &createReq.PathMatchType, &createReq.RewritePath, &createReq.RewritePathType,
 		&createReq.Priority)
 
-	target, err := r.client.CreateTarget(ctx, int(plan.ResourceID.ValueInt64()), createReq)
+	var target *client.Target
+	var err error
+	if !plan.AIProviderID.IsNull() {
+		target, err = r.client.CreateAIProviderTarget(ctx, int(plan.AIProviderID.ValueInt64()), createReq)
+	} else {
+		target, err = r.client.CreateTarget(ctx, int(plan.ResourceID.ValueInt64()), createReq)
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create target", err.Error())
 		return
@@ -590,10 +612,16 @@ func targetToModel(t *client.Target, prior TargetResourceModel) TargetResourceMo
 		}
 	}
 	_ = prior
+	// The server sets exactly one owner; the other comes back null.
+	resourceID := types.Int64Null()
+	if t.ProviderID == nil {
+		resourceID = types.Int64Value(int64(t.ResourceID))
+	}
 
 	return TargetResourceModel{
 		ID:                   types.Int64Value(int64(t.TargetID)),
-		ResourceID:           types.Int64Value(int64(t.ResourceID)),
+		ResourceID:           resourceID,
+		AIProviderID:         tfconv.Int64FromIntPtr(t.ProviderID),
 		SiteID:               types.Int64Value(int64(t.SiteID)),
 		IP:                   types.StringValue(t.IP),
 		Port:                 types.Int64Value(int64(t.Port)),
