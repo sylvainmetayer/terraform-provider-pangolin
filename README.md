@@ -2,8 +2,8 @@
 
 The **Pangolin** Terraform provider lets you manage [Pangolin](https://github.com/fosrl/pangolin) infrastructure as code: organizations, sites, HTTP and private site resources, targets, roles, users, API keys, OLM clients, domains, identity providers, access-control rules, and all assignments.
 
-[![Terraform Registry](https://img.shields.io/badge/Terraform-Registry-purple)](https://registry.terraform.io/providers/stackopshq/pangolin)
-[![OpenTofu Registry](https://img.shields.io/badge/OpenTofu-Registry-yellow)](https://search.opentofu.org/provider/stackopshq/pangolin)
+This repository is a fork of [stackopshq/terraform-provider-pangolin](https://github.com/stackopshq/terraform-provider-pangolin), the original provider. The fork is not published on a registry yet: `stackopshq/pangolin` on the Terraform and OpenTofu registries is the upstream release (1.6.x), without the resources, data sources and fixes documented here.
+
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue)](LICENSE)
 
 ## Requirements
@@ -19,7 +19,7 @@ terraform {
   required_providers {
     pangolin = {
       source  = "stackopshq/pangolin"
-      version = "~> 1.6"
+      version = "1.7.0-sylvain.5"
     }
   }
 }
@@ -30,6 +30,23 @@ provider "pangolin" {
   org_id  = "my-org"
 }
 ```
+
+### Installing the fork
+
+Until it is on a registry, the fork ships as pre-releases on [GitHub Releases](https://github.com/sylvainmetayer/terraform-provider-pangolin/releases): `linux_amd64` only and unsigned. Install one through an implicit local mirror, under the `stackopshq/pangolin` address the provider still uses:
+
+```bash
+version=1.7.0-sylvain.5
+zip=terraform-provider-pangolin_${version}_linux_amd64.zip
+base=https://github.com/sylvainmetayer/terraform-provider-pangolin/releases/download/v${version}
+# registry.opentofu.org for OpenTofu, registry.terraform.io for Terraform
+mirror=terraform.d/plugins/registry.opentofu.org/stackopshq/pangolin
+mkdir -p "$mirror"
+curl -fsSLo "$mirror/$zip" "$base/$zip"
+curl -fsSL "$base/terraform-provider-pangolin_${version}_SHA256SUMS" | grep " $zip\$" | (cd "$mirror" && sha256sum --check)
+```
+
+Run this in the configuration directory, then `tofu init` (or `terraform init`). A pre-release is only selected by an exact `version`, as above.
 
 All provider arguments can be set via environment variables:
 
@@ -188,7 +205,7 @@ resource "pangolin_site_resource" "ssh_bastion" {
 }
 ```
 
-Full documentation is available on the [Terraform Registry](https://registry.terraform.io/providers/stackopshq/pangolin/latest/docs).
+Full documentation is in [`docs/`](docs). The [Terraform Registry](https://registry.terraform.io/providers/stackopshq/pangolin/latest/docs) only documents the upstream release.
 
 ## Development
 

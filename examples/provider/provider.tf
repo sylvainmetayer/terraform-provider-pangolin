@@ -2,7 +2,7 @@ terraform {
   required_providers {
     pangolin = {
       source  = "stackopshq/pangolin"
-      version = "~> 1.6"
+      version = "1.7.0-sylvain.5" # fork pre-release, installed from a local mirror
     }
   }
 }
