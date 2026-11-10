@@ -260,9 +260,8 @@ func (r *RoleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// replacement_role_id alone changed: no API call. A full update would
-	// resend allow_ssh from the state, which the server does not return,
-	// and could revoke an SSH access granted outside Terraform.
+	// replacement_role_id alone changed: no API call, the server has
+	// nothing to update.
 	onlyReplacement := tfsdk.State{Schema: req.State.Schema, Raw: req.State.Raw.Copy()}
 	resp.Diagnostics.Append(onlyReplacement.SetAttribute(ctx, path.Root("replacement_role_id"), plan.ReplacementRoleID)...)
 	if resp.Diagnostics.HasError() {
@@ -445,12 +444,9 @@ func applyRoleSSHFields(
 
 // roleToModel maps a *client.Role onto a RoleResourceModel, decoding
 // the JSON-serialized list fields (sshSudoCommands, sshUnixGroups)
-// into proper Terraform string lists.
-// roleToModel maps a *client.Role onto a RoleResourceModel. `prior`
-// carries the value the user planned (Create/Update path) or the
-// previous state (Read path); it lets us preserve fields the server
-// no longer surfaces on the wire (`allowSsh` was dropped from the
-// Read response in Pangolin 1.19).
+// into proper Terraform string lists. `prior` carries the value the
+// user planned (Create/Update path) or the previous state (Read path);
+// it keeps the fields the server does not return.
 func roleToModel(ctx context.Context, role *client.Role, prior RoleResourceModel) (RoleResourceModel, diag.Diagnostics) {
 	var allDiags diag.Diagnostics
 
@@ -473,10 +469,9 @@ func roleToModel(ctx context.Context, role *client.Role, prior RoleResourceModel
 		isAdmin = types.BoolValue(*role.IsAdmin)
 	}
 
-	// Pangolin 1.19 stopped emitting `allowSsh` on Read responses. If
-	// the server did not surface it (role.AllowSSH == nil) we preserve
-	// the value the user planned so the plan is a no-op - the field is
-	// still writable and honored server-side on Create/Update.
+	// allowSsh comes from the role list (client.GetRoleByID). It is nil
+	// only before Pangolin 1.16 or for a role outside the provider's org:
+	// keep the prior value then, so the plan is a no-op.
 	allowSSH := prior.AllowSSH
 	if role.AllowSSH != nil {
 		allowSSH = types.BoolValue(*role.AllowSSH)

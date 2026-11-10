@@ -1651,8 +1651,8 @@ type Role struct {
 	OrgName               string `json:"orgName,omitempty"`
 	RequireDeviceApproval bool   `json:"requireDeviceApproval"`
 	// AllowSSH is a *bool so callers can distinguish "server did not
-	// emit the field" (nil - the 1.19+ Read response no longer surfaces
-	// allowSsh) from an explicit false. The Update/Create requests
+	// emit the field" (nil: GET /role/{id} never does, nor does the role
+	// list before Pangolin 1.16) from an explicit false. The Update/Create requests
 	// keep pointer semantics too, so nil round-trips as "leave alone"
 	// on the wire.
 	AllowSSH           *bool  `json:"allowSsh,omitempty"`
@@ -2348,19 +2348,19 @@ func (c *Client) GetRole(ctx context.Context, roleID int) (*Role, error) {
 	return &role, nil
 }
 
-// GetRoleByID retrieves a role by ID. It prefers the direct
-// GET /role/{id} endpoint introduced in Pangolin 1.19; if the
-// server returns 404 (route not wired on older builds) it falls
-// back to the historical list+filter path via ListRoles. This
-// keeps the client backwards-compatible without paying the extra
-// round-trip on 1.19+ deployments.
+// GetRoleByID retrieves a role by ID. GET /role/{id} returns neither
+// allowSsh (a signSshKey role action, not a column) nor orgName: the
+// role list does, so the role is taken from the list of the provider's
+// org. The GET result is kept only for a role outside that list (a role
+// of another org, imported with a root key); a 404 on GET (route not
+// wired on old builds) still falls back to the list.
 func (c *Client) GetRoleByID(ctx context.Context, roleID int) (*Role, error) {
 	role, err := c.GetRole(ctx, roleID)
-	if err == nil {
-		return role, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
+	}
+	if err == nil && role.AllowSSH != nil {
+		return role, nil
 	}
 	roles, listErr := c.ListRoles(ctx)
 	if listErr != nil {
@@ -2371,6 +2371,9 @@ func (c *Client) GetRoleByID(ctx context.Context, roleID int) (*Role, error) {
 			out := r
 			return &out, nil
 		}
+	}
+	if err == nil {
+		return role, nil
 	}
 	return nil, fmt.Errorf("role %d: %w", roleID, ErrNotFound)
 }
