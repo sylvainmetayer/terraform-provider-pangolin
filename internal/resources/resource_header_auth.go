@@ -173,7 +173,7 @@ func (r *ResourceHeaderAuthResource) Delete(ctx context.Context, req resource.De
 		Password:              nil,
 		User:                  nil,
 		ExtendedCompatibility: false,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove resource header auth", err.Error())
 		return
 	}

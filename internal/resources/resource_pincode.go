@@ -143,7 +143,7 @@ func (r *ResourcePincodeResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 
-	if err := r.client.SetResourcePincode(ctx, int(state.ResourceID.ValueInt64()), nil); err != nil {
+	if err := r.client.SetResourcePincode(ctx, int(state.ResourceID.ValueInt64()), nil); err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove resource PIN code", err.Error())
 		return
 	}

@@ -354,7 +354,7 @@ func (r *OrgResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		return
 	}
 
-	if err := r.client.DeleteOrg(ctx, state.OrgID.ValueString()); err != nil {
+	if err := r.client.DeleteOrg(ctx, state.OrgID.ValueString()); err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete org", err.Error())
 		return
 	}

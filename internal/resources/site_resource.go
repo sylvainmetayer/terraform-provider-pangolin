@@ -603,7 +603,7 @@ func (r *SitePrivateResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	err := r.client.DeleteSiteResource(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete site resource", err.Error())
 		return
 	}

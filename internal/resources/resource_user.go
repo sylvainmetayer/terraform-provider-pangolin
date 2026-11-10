@@ -135,7 +135,7 @@ func (r *ResourceUserResource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 
 	err := r.client.RemoveUserFromResource(ctx, int(state.ResourceID.ValueInt64()), state.UserID.ValueString())
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove user from resource", err.Error())
 		return
 	}

@@ -199,7 +199,7 @@ func (r *IDPOrgResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 
 	err := r.client.DeleteIDPOrgPolicy(ctx, int(state.IDPId.ValueInt64()), state.OrgID.ValueString())
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete IDP org policy", err.Error())
 		return
 	}

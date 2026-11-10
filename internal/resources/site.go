@@ -311,7 +311,7 @@ func (r *SiteResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 
 	err := r.client.DeleteSite(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete site", err.Error())
 		return
 	}

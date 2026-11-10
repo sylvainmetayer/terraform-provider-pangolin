@@ -765,7 +765,7 @@ func (r *HTTPResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 
 	err := r.client.DeleteResource(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete resource", err.Error())
 		return
 	}

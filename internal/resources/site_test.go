@@ -1,10 +1,17 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stackopshq/terraform-provider-pangolin/internal/client"
 )
 
@@ -203,5 +210,28 @@ func TestSiteUpdateRequestNewtAutoUpdate(t *testing.T) {
 	}
 	if v := siteNewtAutoUpdate(&client.Site{AutoUpdateEnabled: &on, AutoUpdateOverrideOrg: &on}); !v.ValueBool() {
 		t.Fatal("override on must read as true")
+	}
+}
+
+func TestSiteDelete_404IsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"data":null,"success":false,"error":true,"message":"Site with ID 7 not found","status":404}`))
+	}))
+	t.Cleanup(srv.Close)
+	r := &SiteResource{client: client.NewClient(srv.URL, "k", "org")}
+
+	ctx := context.Background()
+	var sresp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &sresp)
+	state := tfsdk.State{Schema: sresp.Schema, Raw: tftypes.NewValue(sresp.Schema.Type().TerraformType(ctx), nil)}
+	if d := state.SetAttribute(ctx, path.Root("id"), int64(7)); d.HasError() {
+		t.Fatalf("set state: %v", d)
+	}
+	resp := resource.DeleteResponse{State: state}
+	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("404 on delete must be a success, got %v", resp.Diagnostics)
 	}
 }

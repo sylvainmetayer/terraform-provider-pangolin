@@ -143,7 +143,7 @@ func (r *ResourcePasswordResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 
-	if err := r.client.SetResourcePassword(ctx, int(state.ResourceID.ValueInt64()), nil); err != nil {
+	if err := r.client.SetResourcePassword(ctx, int(state.ResourceID.ValueInt64()), nil); err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove resource password", err.Error())
 		return
 	}
