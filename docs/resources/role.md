@@ -3,12 +3,12 @@
 page_title: "pangolin_role Resource - pangolin"
 subcategory: ""
 description: |-
-  Manages a Pangolin role. Roles carry both standard RBAC fields (name, description) and the SSH bastion configuration: whether members of this role may open SSH sessions through Pangolin, how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory.
+  Manages a Pangolin role. Roles carry both standard RBAC fields (name, description) and the SSH bastion configuration: whether members of this role may open SSH sessions through Pangolin, how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory. Reading a role needs the listRoles permission on the API key: GET /role/{roleId} does not return allow_ssh nor org_name, only the role list does, so without it every refresh fails with a 403.
 ---
 
 # pangolin_role (Resource)
 
-Manages a Pangolin role. Roles carry both standard RBAC fields (`name`, `description`) and the SSH bastion configuration: whether members of this role may open SSH sessions through Pangolin, how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory.
+Manages a Pangolin role. Roles carry both standard RBAC fields (`name`, `description`) and the SSH bastion configuration: whether members of this role may open SSH sessions through Pangolin, how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory. Reading a role needs the `listRoles` permission on the API key: `GET /role/{roleId}` does not return `allow_ssh` nor `org_name`, only the role list does, so without it every refresh fails with a 403.
 
 ## Example Usage
 
@@ -53,7 +53,7 @@ resource "pangolin_role" "auditors" {
 
 ### Optional
 
-- `allow_ssh` (Boolean) Whether members of this role may open SSH sessions through the Pangolin bastion.
+- `allow_ssh` (Boolean) Whether members of this role may open SSH sessions through the Pangolin bastion. Read from the role list (`listRoles` permission). Unset: follows the server value, so a change made in the Pangolin interface is kept, not revoked.
 - `description` (String) The description of the role.
 - `replacement_role_id` (Number) ID of the role that receives the members of this role when it is deleted. It must be another non-admin role of the organization, or the destroy fails without deleting anything. Unset: the first non-admin role by name. Only used on destroy: changing it alone makes no API call. When it references another `pangolin_role` (`pangolin_role.other.id`), Terraform destroys this role first, so the replacement still exists.
 - `require_device_approval` (Boolean) Require an administrator to approve each new device before its user can use this role. Enterprise: a server without a license ignores it, and the apply fails with an inconsistent result.

@@ -2332,10 +2332,8 @@ func (c *Client) CreateRole(ctx context.Context, req *CreateRoleRequest) (*Role,
 	return &role, nil
 }
 
-// GetRole retrieves a role by ID via the direct GET /role/{id}
-// endpoint that Pangolin 1.19+ exposes. On older servers (or when
-// the route is not wired) the caller should fall back to
-// GetRoleByID, which handles that automatically.
+// GetRole retrieves a role by ID via GET /role/{id}. The answer has
+// neither allowSsh nor orgName: use GetRoleByID.
 func (c *Client) GetRole(ctx context.Context, roleID int) (*Role, error) {
 	resp, err := c.doRequest(ctx, "GET", fmt.Sprintf("/role/%d", roleID), nil)
 	if err != nil {
@@ -2348,34 +2346,35 @@ func (c *Client) GetRole(ctx context.Context, roleID int) (*Role, error) {
 	return &role, nil
 }
 
-// GetRoleByID retrieves a role by ID. GET /role/{id} returns neither
-// allowSsh (a signSshKey role action, not a column) nor orgName: the
-// role list does, so the role is taken from the list of the provider's
-// org. The GET result is kept only for a role outside that list (a role
-// of another org, imported with a root key); a 404 on GET (route not
-// wired on old builds) still falls back to the list.
+// GetRoleByID retrieves a role by ID from the role list of the provider's
+// org: GET /role/{id} returns neither allowSsh (a signSshKey role action,
+// not a column) nor orgName, the list does. The walk stops at the role.
+// GET is used only for a role outside the list: a role of another org
+// (imported with a root key), or a deleted one (ErrNotFound).
 func (c *Client) GetRoleByID(ctx context.Context, roleID int) (*Role, error) {
-	role, err := c.GetRole(ctx, roleID)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	var found *Role
+	err := c.walkOrgList(ctx, "roles", "", "roles", func(raw json.RawMessage) (bool, error) {
+		var r Role
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return false, fmt.Errorf("failed to parse role: %w", err)
+		}
+		if r.RoleID != roleID {
+			return false, nil
+		}
+		found = &r
+		return true, nil
+	})
+	if errors.Is(err, ErrForbidden) {
+		return nil, fmt.Errorf("reading role %d needs the listRoles permission on the API key: "+
+			"GET /role/{id} does not return allowSsh, only the role list does: %w", roleID, err)
+	}
+	if err != nil {
 		return nil, err
 	}
-	if err == nil && role.AllowSSH != nil {
-		return role, nil
+	if found != nil {
+		return found, nil
 	}
-	roles, listErr := c.ListRoles(ctx)
-	if listErr != nil {
-		return nil, listErr
-	}
-	for _, r := range roles {
-		if r.RoleID == roleID {
-			out := r
-			return &out, nil
-		}
-	}
-	if err == nil {
-		return role, nil
-	}
-	return nil, fmt.Errorf("role %d: %w", roleID, ErrNotFound)
+	return c.GetRole(ctx, roleID)
 }
 
 // UpdateRoleRequest is the payload for updating a role. All SSH bastion

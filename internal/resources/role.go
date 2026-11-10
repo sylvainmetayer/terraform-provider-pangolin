@@ -68,7 +68,9 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 	resp.Schema = schema.Schema{
 		Description: "Manages a Pangolin role. Roles carry both standard RBAC fields (`name`, `description`) and " +
 			"the SSH bastion configuration: whether members of this role may open SSH sessions through Pangolin, " +
-			"how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory.",
+			"how sudo is gated, which Unix groups to grant on the target host, and whether to auto-create a home directory. " +
+			"Reading a role needs the `listRoles` permission on the API key: `GET /role/{roleId}` does not return `allow_ssh` nor `org_name`, " +
+			"only the role list does, so without it every refresh fails with a 403.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The numeric ID of the role.",
@@ -105,9 +107,10 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"allow_ssh": schema.BoolAttribute{
-				Description: "Whether members of this role may open SSH sessions through the Pangolin bastion.",
-				Optional:    true,
-				Computed:    true,
+				Description: "Whether members of this role may open SSH sessions through the Pangolin bastion. " +
+					"Read from the role list (`listRoles` permission). Unset: follows the server value, so a change made in the Pangolin interface is kept, not revoked.",
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
@@ -172,7 +175,7 @@ func (r *RoleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Display name of the organization the role belongs to.",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
+					useNonEmptyStateForUnknown{},
 				},
 			},
 		},
@@ -494,4 +497,24 @@ func roleToModel(ctx context.Context, role *client.Role, prior RoleResourceModel
 		OrgName:               types.StringValue(role.OrgName),
 		ReplacementRoleID:     prior.ReplacementRoleID,
 	}, allDiags
+}
+
+// useNonEmptyStateForUnknown is UseStateForUnknown, except an empty state
+// value stays unknown: states written before org_name was read hold "",
+// and planning it would fail the apply once the real name is read back.
+type useNonEmptyStateForUnknown struct{}
+
+func (useNonEmptyStateForUnknown) Description(context.Context) string {
+	return "Uses the state value when it is not empty."
+}
+
+func (m useNonEmptyStateForUnknown) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (useNonEmptyStateForUnknown) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.StateValue.IsUnknown() || req.StateValue.ValueString() == "" || !req.PlanValue.IsUnknown() {
+		return
+	}
+	resp.PlanValue = req.StateValue
 }

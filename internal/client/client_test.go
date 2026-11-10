@@ -2730,34 +2730,49 @@ func TestGetRole_AllowSSHOmittedFromRead(t *testing.T) {
 	}
 }
 
-// TestGetRoleByID_DirectHitFast verifies that when GET /role/{id}
-// works on 1.19+, GetRoleByID does NOT round-trip through the
-// list endpoint at all - a hit on the list handler here would
-// mean an unnecessary API call in production.
-func TestGetRoleByID_DirectHitFast(t *testing.T) {
+// TestGetRoleByID_ListStopsAtRole: the role is taken from the list, which
+// carries allowSsh and orgName (GET /role/{id} never does): the walk stops
+// on the page holding it and no GET is sent.
+func TestGetRoleByID_ListStopsAtRole(t *testing.T) {
+	var calls []string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/org/test-org/roles" {
-			t.Errorf("unexpected fallback to list endpoint")
+		calls = append(calls, r.URL.RequestURI())
+		if r.URL.Path != "/v1/org/test-org/roles" {
+			t.Errorf("unexpected %s", r.URL.Path)
 		}
-		if r.URL.Path != "/v1/role/77" {
-			t.Errorf("path = %q, want /v1/role/77", r.URL.Path)
+		id := 76
+		if r.URL.Query().Get("page") != "1" {
+			id = 77
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"roleId":                77,
-			"name":                  "cached",
-			"description":           "",
-			"requireDeviceApproval": false,
-			"allowSsh":              false,
-			"sshCreateHomeDir":      false,
+			"roles":      []map[string]any{{"roleId": id, "name": "r", "orgName": "Test Org", "allowSsh": true, "sshSudoCommands": "[]", "sshUnixGroups": "[]"}},
+			"pagination": map[string]any{"total": 3},
 		})
 	})
-
 	role, err := c.GetRoleByID(context.Background(), 77)
 	if err != nil {
 		t.Fatalf("GetRoleByID: %v", err)
 	}
-	if role.RoleID != 77 || role.Name != "cached" {
-		t.Errorf("scalars wrong: %+v", role)
+	if role.RoleID != 77 || role.AllowSSH == nil || !*role.AllowSSH || role.OrgName != "Test Org" {
+		t.Errorf("role = %+v", role)
+	}
+	if len(calls) != 2 {
+		t.Errorf("calls = %v, want 2 list pages then stop", calls)
+	}
+}
+
+// Without listRoles the read fails, naming the permission, rather than
+// falling back to GET /role/{id} and its missing allowSsh.
+func TestGetRoleByID_ListForbidden(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org/test-org/roles" {
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+		writeAPIError(t, w, http.StatusForbidden, "Key does not have permission perform this action")
+	})
+	_, err := c.GetRoleByID(context.Background(), 77)
+	if !errors.Is(err, ErrForbidden) || !strings.Contains(err.Error(), "listRoles permission") {
+		t.Errorf("err = %v, want a 403 naming listRoles", err)
 	}
 }
 
