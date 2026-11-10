@@ -141,7 +141,7 @@ func (r *ResourceWhitelistResource) Delete(ctx context.Context, req resource.Del
 	}
 
 	err := r.client.RemoveWhitelistFromResource(ctx, int(state.ResourceID.ValueInt64()), state.Email.ValueString())
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove email from resource whitelist", err.Error())
 		return
 	}

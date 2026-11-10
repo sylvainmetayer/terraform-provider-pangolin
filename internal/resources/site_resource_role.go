@@ -130,7 +130,7 @@ func (r *SiteResourceRoleResource) Delete(ctx context.Context, req resource.Dele
 	}
 
 	err := r.client.RemoveRoleFromSiteResource(ctx, int(state.SiteResourceID.ValueInt64()), int(state.RoleID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to remove role from site resource", err.Error())
 		return
 	}

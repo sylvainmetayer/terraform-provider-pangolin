@@ -195,7 +195,7 @@ func (r *ResourceRuleResource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 
 	err := r.client.DeleteResourceRule(ctx, int(state.ResourceID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete resource rule", err.Error())
 		return
 	}

@@ -309,7 +309,7 @@ func (r *OLMClientResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	err := r.client.DeleteOLMClient(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
+	if err != nil && !errors.Is(err, client.ErrNotFound) {
 		resp.Diagnostics.AddError("Failed to delete OLM client", err.Error())
 		return
 	}
