@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -537,35 +539,101 @@ func TestRoleToModel_ReplacementRoleIDFromPrior(t *testing.T) {
 	}
 }
 
-// updateRole5 runs Update from a full state of role 5 to a plan built by
-// edit, against a server answering the update and the re-read. It returns
-// the requests the server received and the resulting state.
-func updateRole5(t *testing.T, edit func(*RoleResourceModel)) ([]string, RoleResourceModel) {
-	t.Helper()
-	var calls []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"roleId":5,"orgId":"org","name":"Devs","description":"new","isAdmin":null,"sshSudoMode":"none","sshSudoCommands":"[]","sshUnixGroups":"[]"},"success":true,"error":false,"message":"ok","status":200}`))
-	}))
-	t.Cleanup(srv.Close)
-	r := &RoleResource{client: client.NewClient(srv.URL, "k", "org")}
+// fakeRoleServer answers the role routes like the Pangolin server does:
+// GET /role/{id}, the create and the update return the roles row, without
+// allowSsh (a signSshKey role action) nor orgName; only the role list
+// carries both. An update without allowSsh leaves the action alone.
+type fakeRoleServer struct {
+	t           *testing.T
+	description string
+	allowSSH    bool
+	calls       []string
+	bodies      []map[string]any // create and update bodies
+}
 
-	ctx := context.Background()
-	var sresp resource.SchemaResponse
-	r.Schema(ctx, resource.SchemaRequest{}, &sresp)
-	empty, _ := types.ListValueFrom(ctx, types.StringType, []string{})
-	prior := RoleResourceModel{
+func (f *fakeRoleServer) row() string {
+	return fmt.Sprintf(`{"roleId":5,"orgId":"org","isAdmin":null,"name":"Devs","description":%q,"requireDeviceApproval":false,"sshSudoMode":"none","sshSudoCommands":"[]","sshCreateHomeDir":false,"sshUnixGroups":"[]"}`, f.description)
+}
+
+func (f *fakeRoleServer) client() *client.Client {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		data := f.row()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/role/5":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/org/org/roles":
+			data = fmt.Sprintf(`{"roles":[%s,%s],"pagination":{"total":2,"page":1,"pageSize":1000}}`,
+				roleAdmin, strings.Replace(f.row(), `{`, fmt.Sprintf(`{"orgName":"Org","allowSsh":%t,`, f.allowSSH), 1))
+		case (r.Method == http.MethodPut && r.URL.Path == "/v1/org/org/role") || (r.Method == http.MethodPost && r.URL.Path == "/v1/role/5"):
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				f.t.Errorf("body: %v", err)
+			}
+			f.bodies = append(f.bodies, body)
+			if d, ok := body["description"].(string); ok {
+				f.description = d
+			}
+			if a, ok := body["allowSsh"].(bool); ok {
+				f.allowSSH = a
+			} else if r.Method == http.MethodPut {
+				f.allowSSH = false
+			}
+			data = f.row()
+		default:
+			f.t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"data":%s,"success":true,"error":false,"message":"ok","status":200}`, data)
+	}))
+	f.t.Cleanup(srv.Close)
+	return client.NewClient(srv.URL, "k", "org")
+}
+
+// role5State is the state of role 5 as written by Create or Read.
+func role5State(allowSSH bool) RoleResourceModel {
+	empty, _ := types.ListValueFrom(context.Background(), types.StringType, []string{})
+	return RoleResourceModel{
 		ID: types.Int64Value(5), Name: types.StringValue("Devs"), Description: types.StringValue("old"),
-		RequireDeviceApproval: types.BoolValue(false), AllowSSH: types.BoolValue(false),
+		RequireDeviceApproval: types.BoolValue(false), AllowSSH: types.BoolValue(allowSSH),
 		SSHSudoMode: types.StringValue("none"), SSHSudoCommands: empty, SSHCreateHomeDir: types.BoolValue(false),
 		SSHUnixGroups: empty, IsAdmin: types.BoolValue(false), OrgName: types.StringValue("Org"),
 		ReplacementRoleID: types.Int64Null(),
 	}
-	planned := prior
-	edit(&planned)
-	state := tfsdk.State{Schema: sresp.Schema}
-	plan := tfsdk.Plan{Schema: sresp.Schema}
+}
+
+func roleSchema(t *testing.T) schema.Schema {
+	t.Helper()
+	var sresp resource.SchemaResponse
+	(&RoleResource{}).Schema(context.Background(), resource.SchemaRequest{}, &sresp)
+	return sresp.Schema
+}
+
+// readRole runs Read from the given state and returns the new state.
+func readRole(t *testing.T, r *RoleResource, prior RoleResourceModel) RoleResourceModel {
+	t.Helper()
+	ctx := context.Background()
+	state := tfsdk.State{Schema: roleSchema(t)}
+	if d := state.Set(ctx, &prior); d.HasError() {
+		t.Fatalf("set state: %v", d)
+	}
+	resp := resource.ReadResponse{State: state}
+	r.Read(ctx, resource.ReadRequest{State: state}, &resp)
+	var got RoleResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &got)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("read: %v", resp.Diagnostics)
+	}
+	return got
+}
+
+// updateRole runs Update from prior to planned and returns the new state.
+func updateRole(t *testing.T, r *RoleResource, prior, planned RoleResourceModel) RoleResourceModel {
+	t.Helper()
+	ctx := context.Background()
+	state := tfsdk.State{Schema: roleSchema(t)}
+	plan := tfsdk.Plan{Schema: roleSchema(t)}
 	if d := state.Set(ctx, &prior); d.HasError() {
 		t.Fatalf("set state: %v", d)
 	}
@@ -579,7 +647,19 @@ func updateRole5(t *testing.T, edit func(*RoleResourceModel)) ([]string, RoleRes
 	}
 	var got RoleResourceModel
 	resp.Diagnostics.Append(resp.State.Get(ctx, &got)...)
-	return calls, got
+	return got
+}
+
+// updateRole5 runs Update from a full state of role 5 to a plan built by
+// edit. It returns the requests the server received and the new state.
+func updateRole5(t *testing.T, edit func(*RoleResourceModel)) ([]string, RoleResourceModel) {
+	t.Helper()
+	f := &fakeRoleServer{t: t, description: "old"}
+	prior := role5State(false)
+	planned := prior
+	edit(&planned)
+	got := updateRole(t, &RoleResource{client: f.client()}, prior, planned)
+	return f.calls, got
 }
 
 func TestRoleUpdate_OnlyReplacementRoleIDMakesNoCall(t *testing.T) {
@@ -615,5 +695,140 @@ func TestRoleSchema_ReplacementRoleIDAtLeastOne(t *testing.T) {
 	}
 	if !vresp.Diagnostics.HasError() {
 		t.Error("replacement_role_id = 0 must be refused")
+	}
+}
+
+// SSH granted from the Pangolin interface after the state was written: the
+// refresh reads it from the role list, and an update of another field keeps
+// it instead of sending the stale allow_ssh = false.
+func TestRoleReadThenUpdate_KeepsSSHGrantedOutsideTerraform(t *testing.T) {
+	f := &fakeRoleServer{t: t, description: "old", allowSSH: true}
+	r := &RoleResource{client: f.client()}
+
+	refreshed := readRole(t, r, role5State(false))
+	if !refreshed.AllowSSH.ValueBool() {
+		t.Fatalf("read: allow_ssh = %v, want the server value true", refreshed.AllowSSH)
+	}
+	// allow_ssh not in the configuration: UseStateForUnknown plans the state value.
+	planned := refreshed
+	planned.Description = types.StringValue("new")
+	got := updateRole(t, r, refreshed, planned)
+
+	if !f.allowSSH {
+		t.Errorf("server allowSsh = false after an update of the description, want true (bodies %v)", f.bodies)
+	}
+	if !got.AllowSSH.ValueBool() || got.Description.ValueString() != "new" {
+		t.Errorf("state = %v / %v, want true / new", got.AllowSSH, got.Description)
+	}
+	if again := readRole(t, r, got); !again.AllowSSH.Equal(got.AllowSSH) || !again.Description.Equal(got.Description) || !again.OrgName.Equal(got.OrgName) {
+		t.Errorf("read after update = %+v, want %+v (perpetual diff)", again, got)
+	}
+}
+
+func TestRoleUpdate_AllowSSHChangeIsSent(t *testing.T) {
+	for _, want := range []bool{false, true} {
+		f := &fakeRoleServer{t: t, description: "old", allowSSH: !want}
+		planned := role5State(want)
+		got := updateRole(t, &RoleResource{client: f.client()}, role5State(!want), planned)
+		if len(f.bodies) != 1 || f.bodies[0]["allowSsh"] != want {
+			t.Errorf("want %v: update bodies = %v", want, f.bodies)
+		}
+		if f.allowSSH != want || got.AllowSSH.ValueBool() != want {
+			t.Errorf("want %v: server %v, state %v", want, f.allowSSH, got.AllowSSH)
+		}
+	}
+}
+
+func TestRoleCreate_AllowSSH(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		config types.Bool // unknown: not in the configuration
+		want   bool
+	}{
+		{"unset is not sent", types.BoolUnknown(), false},
+		{"true is sent", types.BoolValue(true), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRoleServer{t: t}
+			r := &RoleResource{client: f.client()}
+			planned := RoleResourceModel{
+				ID: types.Int64Unknown(), Name: types.StringValue("Devs"), Description: types.StringValue("old"),
+				RequireDeviceApproval: types.BoolUnknown(), AllowSSH: tc.config, SSHSudoMode: types.StringUnknown(),
+				SSHSudoCommands: types.ListUnknown(types.StringType), SSHCreateHomeDir: types.BoolUnknown(),
+				SSHUnixGroups: types.ListUnknown(types.StringType), IsAdmin: types.BoolUnknown(), OrgName: types.StringUnknown(),
+				ReplacementRoleID: types.Int64Null(),
+			}
+			plan := tfsdk.Plan{Schema: roleSchema(t)}
+			if d := plan.Set(ctx, &planned); d.HasError() {
+				t.Fatalf("set plan: %v", d)
+			}
+			resp := resource.CreateResponse{State: tfsdk.State{Schema: roleSchema(t)}}
+			r.Create(ctx, resource.CreateRequest{Plan: plan}, &resp)
+			var got RoleResourceModel
+			resp.Diagnostics.Append(resp.State.Get(ctx, &got)...)
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("create: %v", resp.Diagnostics)
+			}
+			if _, sent := f.bodies[0]["allowSsh"]; sent != !tc.config.IsUnknown() {
+				t.Errorf("create body = %v", f.bodies[0])
+			}
+			if got.AllowSSH.ValueBool() != tc.want || f.allowSSH != tc.want || got.OrgName.ValueString() != "Org" {
+				t.Errorf("state %v / %q, server %v, want %v / Org", got.AllowSSH, got.OrgName.ValueString(), f.allowSSH, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoleImport_ReadsAllowSSH(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeRoleServer{t: t, description: "old", allowSSH: true}
+	r := &RoleResource{client: f.client()}
+	sch := roleSchema(t)
+	resp := resource.ImportStateResponse{State: tfsdk.State{Schema: sch, Raw: tftypes.NewValue(sch.Type().TerraformType(ctx), nil)}}
+	r.ImportState(ctx, resource.ImportStateRequest{ID: "5"}, &resp)
+	var got RoleResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &got)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("import: %v", resp.Diagnostics)
+	}
+	if !got.AllowSSH.ValueBool() || got.OrgName.ValueString() != "Org" || !got.ReplacementRoleID.IsNull() {
+		t.Errorf("imported state = %+v", got)
+	}
+}
+
+// A state written before org_name was read holds "": planning it would fail
+// the apply ("was \"\", now \"Org\"") when the update reads the real name,
+// so it stays unknown. A non-empty state is reused: no diff on later plans.
+func TestRoleOrgName_EmptyStateStaysUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		state types.String
+		want  types.String
+	}{
+		{types.StringValue(""), types.StringUnknown()},
+		{types.StringValue("Org"), types.StringValue("Org")},
+		{types.StringNull(), types.StringUnknown()},
+	} {
+		req := planmodifier.StringRequest{StateValue: tc.state, PlanValue: types.StringUnknown(), ConfigValue: types.StringNull()}
+		resp := planmodifier.StringResponse{PlanValue: req.PlanValue}
+		useNonEmptyStateForUnknown{}.PlanModifyString(context.Background(), req, &resp)
+		if !resp.PlanValue.Equal(tc.want) {
+			t.Errorf("state %v: plan = %v, want %v", tc.state, resp.PlanValue, tc.want)
+		}
+	}
+}
+
+// Update from an old state (org_name "") with org_name left unknown by the
+// plan, as the modifier above does: the new state holds the real name.
+func TestRoleUpdate_FillsOrgNameFromOldState(t *testing.T) {
+	f := &fakeRoleServer{t: t, description: "old"}
+	prior := role5State(false)
+	prior.OrgName = types.StringValue("")
+	planned := prior
+	planned.Description = types.StringValue("new")
+	planned.OrgName = types.StringUnknown()
+	got := updateRole(t, &RoleResource{client: f.client()}, prior, planned)
+	if got.OrgName.ValueString() != "Org" {
+		t.Errorf("org_name = %v, want Org", got.OrgName)
 	}
 }
