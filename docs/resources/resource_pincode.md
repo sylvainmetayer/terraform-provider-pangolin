@@ -4,31 +4,44 @@ page_title: "pangolin_resource_pincode Resource - pangolin"
 subcategory: ""
 description: |-
   Sets a PIN code for accessing a Pangolin HTTP resource. Destroying this resource removes the PIN code protection.
-  **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.
-  Set either pincode (kept in the state) or pincode_wo with pincode_wo_version (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change pincode_wo_version to send a new pincode_wo to Pangolin.
+  **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues. In write-only mode, set `pincode_wo` and `pincode_wo_version`: the import leaves `pincode_wo_version` null, so the next apply sends `pincode_wo` once.
+  Set either pincode (kept in the state) or pincode_wo with pincode_wo_version (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11; an older client fails validation with a message that only names Terraform 1.11). Change pincode_wo_version to send a new pincode_wo to Pangolin: changing pincode_wo alone sends nothing.
 ---
 
 # pangolin_resource_pincode (Resource)
 
 Sets a PIN code for accessing a Pangolin HTTP resource. Destroying this resource removes the PIN code protection.
 
-> **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues.
+> **Note:** The PIN code value cannot be read back from the Pangolin API. After import, you must set the `pincode` attribute manually to avoid drift detection issues. In write-only mode, set `pincode_wo` and `pincode_wo_version`: the import leaves `pincode_wo_version` null, so the next apply sends `pincode_wo` once.
 
-Set either `pincode` (kept in the state) or `pincode_wo` with `pincode_wo_version` (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change `pincode_wo_version` to send a new `pincode_wo` to Pangolin.
+Set either `pincode` (kept in the state) or `pincode_wo` with `pincode_wo_version` (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11; an older client fails validation with a message that only names Terraform 1.11). Change `pincode_wo_version` to send a new `pincode_wo` to Pangolin: changing `pincode_wo` alone sends nothing.
 
 ## Example Usage
 
 ```terraform
-resource "pangolin_resource_pincode" "example" {
-  resource_id = pangolin_resource.example.id
-  pincode     = "123456"
+variable "resource_pincode" {
+  type      = string
+  sensitive = true
 }
 
-# Write-only (Terraform >= 1.11, OpenTofu >= 1.11): the PIN code is never
-# stored in the plan or the state. Change pincode_wo_version to send a new one.
+resource "pangolin_resource_pincode" "example" {
+  resource_id = pangolin_resource.example.id
+  pincode     = var.resource_pincode
+}
+
+# Write-only (Terraform >= 1.11, OpenTofu >= 1.11): the value is never stored
+# in the plan or the state. An ephemeral variable (Terraform >= 1.10,
+# OpenTofu >= 1.11) can feed a write-only argument, not the historical one.
+# Changing the value alone sends nothing: bump pincode_wo_version to send it.
+variable "resource_pincode_wo" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
 resource "pangolin_resource_pincode" "write_only" {
   resource_id        = pangolin_resource.other.id
-  pincode_wo         = var.resource_pincode
+  pincode_wo         = var.resource_pincode_wo
   pincode_wo_version = 1
 }
 ```
@@ -45,8 +58,8 @@ resource "pangolin_resource_pincode" "write_only" {
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
 - `pincode` (String, Sensitive) The PIN code (numeric string, typically 6 digits) required to access the resource, stored in the state. Exactly one of `pincode` and `pincode_wo` is required.
-- `pincode_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only PIN code: sent to Pangolin on create and when `pincode_wo_version` changes, never stored in the plan or the state. Requires Terraform >= 1.11 or OpenTofu >= 1.11.
-- `pincode_wo_version` (Number) Version of `pincode_wo`. Change it to send the current `pincode_wo` to Pangolin, since a write-only value cannot be compared with the state.
+- `pincode_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only PIN code: sent to Pangolin on create and when `pincode_wo_version` changes, never stored in the plan or the state. Changing `pincode_wo` without changing `pincode_wo_version` sends nothing to Pangolin. Requires Terraform >= 1.11 or OpenTofu >= 1.11.
+- `pincode_wo_version` (Number) Version of `pincode_wo`, required with it. Change it (any new value) to send the current `pincode_wo` to Pangolin: a write-only value cannot be compared with the state, so a new `pincode_wo` with the same version sends nothing.
 
 ## Import
 

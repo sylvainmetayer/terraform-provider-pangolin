@@ -4,31 +4,44 @@ page_title: "pangolin_resource_password Resource - pangolin"
 subcategory: ""
 description: |-
   Sets a password for accessing a Pangolin HTTP resource. Destroying this resource removes the password protection.
-  **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues.
-  Set either password (kept in the state) or password_wo with password_wo_version (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change password_wo_version to send a new password_wo to Pangolin.
+  **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues. In write-only mode, set `password_wo` and `password_wo_version`: the import leaves `password_wo_version` null, so the next apply sends `password_wo` once.
+  Set either password (kept in the state) or password_wo with password_wo_version (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11; an older client fails validation with a message that only names Terraform 1.11). Change password_wo_version to send a new password_wo to Pangolin: changing password_wo alone sends nothing.
 ---
 
 # pangolin_resource_password (Resource)
 
 Sets a password for accessing a Pangolin HTTP resource. Destroying this resource removes the password protection.
 
-> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues.
+> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues. In write-only mode, set `password_wo` and `password_wo_version`: the import leaves `password_wo_version` null, so the next apply sends `password_wo` once.
 
-Set either `password` (kept in the state) or `password_wo` with `password_wo_version` (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11). Change `password_wo_version` to send a new `password_wo` to Pangolin.
+Set either `password` (kept in the state) or `password_wo` with `password_wo_version` (never written to the plan or the state; requires Terraform >= 1.11 or OpenTofu >= 1.11; an older client fails validation with a message that only names Terraform 1.11). Change `password_wo_version` to send a new `password_wo` to Pangolin: changing `password_wo` alone sends nothing.
 
 ## Example Usage
 
 ```terraform
+variable "resource_password" {
+  type      = string
+  sensitive = true
+}
+
 resource "pangolin_resource_password" "example" {
   resource_id = pangolin_resource.example.id
   password    = var.resource_password
 }
 
-# Write-only (Terraform >= 1.11, OpenTofu >= 1.11): the password is never
-# stored in the plan or the state. Change password_wo_version to send a new one.
+# Write-only (Terraform >= 1.11, OpenTofu >= 1.11): the value is never stored
+# in the plan or the state. An ephemeral variable (Terraform >= 1.10,
+# OpenTofu >= 1.11) can feed a write-only argument, not the historical one.
+# Changing the value alone sends nothing: bump password_wo_version to send it.
+variable "resource_password_wo" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
 resource "pangolin_resource_password" "write_only" {
   resource_id         = pangolin_resource.other.id
-  password_wo         = var.resource_password
+  password_wo         = var.resource_password_wo
   password_wo_version = 1
 }
 ```
@@ -45,8 +58,8 @@ resource "pangolin_resource_password" "write_only" {
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
 - `password` (String, Sensitive) The password required to access the resource, stored in the state. Exactly one of `password` and `password_wo` is required.
-- `password_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only password: sent to Pangolin on create and when `password_wo_version` changes, never stored in the plan or the state. Requires Terraform >= 1.11 or OpenTofu >= 1.11.
-- `password_wo_version` (Number) Version of `password_wo`. Change it to send the current `password_wo` to Pangolin, since a write-only value cannot be compared with the state.
+- `password_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only password: sent to Pangolin on create and when `password_wo_version` changes, never stored in the plan or the state. Changing `password_wo` without changing `password_wo_version` sends nothing to Pangolin. Requires Terraform >= 1.11 or OpenTofu >= 1.11.
+- `password_wo_version` (Number) Version of `password_wo`, required with it. Change it (any new value) to send the current `password_wo` to Pangolin: a write-only value cannot be compared with the state, so a new `password_wo` with the same version sends nothing.
 
 ## Import
 
