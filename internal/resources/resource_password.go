@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -17,8 +19,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &ResourcePasswordResource{}
-	_ resource.ResourceWithImportState = &ResourcePasswordResource{}
+	_ resource.Resource                     = &ResourcePasswordResource{}
+	_ resource.ResourceWithImportState      = &ResourcePasswordResource{}
+	_ resource.ResourceWithConfigValidators = &ResourcePasswordResource{}
 )
 
 // ResourcePasswordResource manages password authentication for a Pangolin HTTP resource.
@@ -28,8 +31,10 @@ type ResourcePasswordResource struct {
 
 // ResourcePasswordModel describes the resource data model.
 type ResourcePasswordModel struct {
-	ResourceID types.Int64  `tfsdk:"resource_id"`
-	Password   types.String `tfsdk:"password"`
+	ResourceID        types.Int64  `tfsdk:"resource_id"`
+	Password          types.String `tfsdk:"password"`
+	PasswordWO        types.String `tfsdk:"password_wo"`
+	PasswordWOVersion types.Int64  `tfsdk:"password_wo_version"`
 }
 
 // NewResourcePasswordResource returns a new resource factory.
@@ -44,7 +49,11 @@ func (r *ResourcePasswordResource) Metadata(_ context.Context, req resource.Meta
 func (r *ResourcePasswordResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Sets a password for accessing a Pangolin HTTP resource. Destroying this resource removes the password protection.\n\n" +
-			"> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues.",
+			"> **Note:** The password value cannot be read back from the Pangolin API. After import, you must set the `password` attribute manually to avoid drift detection issues. " +
+			"In write-only mode, set `password_wo` and `password_wo_version`: the import leaves `password_wo_version` null, so the next apply sends `password_wo` once.\n\n" +
+			"Set either `password` (kept in the state) or `password_wo` with `password_wo_version` (never written to the plan or the state; " +
+			"requires Terraform >= 1.11 or OpenTofu >= 1.11; an older client fails validation with a message that only names Terraform 1.11). " +
+			"Change `password_wo_version` to send a new `password_wo` to Pangolin: changing `password_wo` alone sends nothing.",
 		Attributes: map[string]schema.Attribute{
 			"resource_id": schema.Int64Attribute{
 				Description: "The ID of the resource to protect with a password.",
@@ -54,14 +63,38 @@ func (r *ResourcePasswordResource) Schema(_ context.Context, _ resource.SchemaRe
 				},
 			},
 			"password": schema.StringAttribute{
-				Description: "The password required to access the resource.",
-				Required:    true,
+				Description: "The password required to access the resource, stored in the state. Exactly one of `password` and `password_wo` is required.",
+				Optional:    true,
 				Sensitive:   true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
 			},
+			"password_wo": schema.StringAttribute{
+				Description: "Write-only password: sent to Pangolin on create and when `password_wo_version` changes, never stored in the plan or the state. " +
+					"Changing `password_wo` without changing `password_wo_version` sends nothing to Pangolin. Requires Terraform >= 1.11 or OpenTofu >= 1.11.",
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
+			},
+			"password_wo_version": schema.Int64Attribute{
+				Description: "Version of `password_wo`, required with it. Change it (any new value) to send the current `password_wo` to Pangolin: " +
+					"a write-only value cannot be compared with the state, so a new `password_wo` with the same version sends nothing.",
+				Optional: true,
+			},
 		},
+	}
+}
+
+// ConfigValidators names both attributes in the messages, which the
+// attribute-level validators did not.
+func (r *ResourcePasswordResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		resourcevalidator.ExactlyOneOf(path.MatchRoot("password"), path.MatchRoot("password_wo")),
+		resourcevalidator.RequiredTogether(path.MatchRoot("password_wo"), path.MatchRoot("password_wo_version")),
 	}
 }
 
@@ -84,7 +117,11 @@ func (r *ResourcePasswordResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	pw := plan.Password.ValueString()
+	pw, diags := secretValue(ctx, req.Config, plan.Password, path.Root("password_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePassword(ctx, int(plan.ResourceID.ValueInt64()), &pw); err != nil {
 		resp.Diagnostics.AddError("Failed to set resource password", err.Error())
 		return
@@ -127,7 +164,11 @@ func (r *ResourcePasswordResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	pw := plan.Password.ValueString()
+	pw, diags := secretValue(ctx, req.Config, plan.Password, path.Root("password_wo"))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.client.SetResourcePassword(ctx, int(plan.ResourceID.ValueInt64()), &pw); err != nil {
 		resp.Diagnostics.AddError("Failed to update resource password", err.Error())
 		return
