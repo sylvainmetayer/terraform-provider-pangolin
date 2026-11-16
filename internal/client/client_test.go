@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -5711,5 +5712,119 @@ func TestCreateResourceAccessTokenRequest_PathAndPersist(t *testing.T) {
 	b, _ = json.Marshal(&CreateResourceAccessTokenRequest{Path: &p, PersistSession: &on})
 	if !strings.Contains(string(b), `"path":"/albums"`) || !strings.Contains(string(b), `"persistSession":true`) {
 		t.Fatalf("body %s", b)
+	}
+}
+
+// Pangolin's org-scoped list endpoints return 20 items per page unless asked
+// otherwise. The client must follow the pages until the reported total.
+func TestListSiteResources_FollowsPagination(t *testing.T) {
+	const total, serverPageSize = 45, 20
+	var requests int32
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.URL.Path != "/v1/org/test-org/site-resources" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		page := 1
+		if v := r.URL.Query().Get("page"); v != "" {
+			if _, err := fmt.Sscan(v, &page); err != nil {
+				t.Errorf("page = %q", v)
+			}
+		}
+		// Ignore the requested pageSize to also cover servers that cap it.
+		start := (page - 1) * serverPageSize
+		items := []SiteResource{}
+		for i := start; i < total && i < start+serverPageSize; i++ {
+			items = append(items, SiteResource{SiteResourceID: i + 1})
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"siteResources": items,
+			"pagination":    map[string]int{"total": total, "pageSize": serverPageSize, "page": page},
+		})
+	})
+
+	got, err := c.ListSiteResources(context.Background())
+	if err != nil {
+		t.Fatalf("ListSiteResources: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("got %d site resources, want %d", len(got), total)
+	}
+	if got[total-1].SiteResourceID != total {
+		t.Errorf("last id = %d, want %d", got[total-1].SiteResourceID, total)
+	}
+	if n := atomic.LoadInt32(&requests); n != 3 {
+		t.Errorf("requests = %d, want 3", n)
+	}
+}
+
+// A failure on a later page must fail the whole list rather than return the
+// pages read so far as if they were everything.
+func TestListResources_ErrorOnLaterPageFails(t *testing.T) {
+	disableRetryBackoff(t)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			writeEnvelope(t, w, http.StatusInternalServerError, nil)
+			return
+		}
+		items := make([]Resource, 20)
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"resources":  items,
+			"pagination": map[string]int{"total": 22, "pageSize": 20, "page": 1},
+		})
+	})
+
+	got, err := c.ListResources(context.Background())
+	if err == nil {
+		t.Fatalf("ListResources: got %d resources and no error, want an error", len(got))
+	}
+	if got != nil {
+		t.Errorf("got %d resources alongside the error, want none", len(got))
+	}
+}
+
+func TestCreateSiteResource_PortRangePointers(t *testing.T) {
+	// An explicit "" means "no ports" and must reach the server; with a
+	// plain string + omitempty it was dropped and the server stored its
+	// default "*" (all ports). nil must still leave the field out.
+	empty := ""
+	tcp := "8123"
+	cases := []struct {
+		name    string
+		udp     *string
+		wantUDP any // nil means the key must be absent
+	}{
+		{name: "explicit empty is sent", udp: &empty, wantUDP: ""},
+		{name: "nil is omitted", udp: nil, wantUDP: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				writeEnvelope(t, w, http.StatusOK, SiteResource{SiteResourceID: 1})
+			})
+			_, err := c.CreateSiteResource(context.Background(), &CreateSiteResourceRequest{
+				Name: "r", SiteID: 1, Mode: "host", Destination: "10.0.0.1", Alias: "r.internal",
+				TCPPortRange: &tcp, UDPPortRange: tc.udp,
+				RoleIDs: []int{}, UserIDs: []string{}, ClientIDs: []int{},
+			})
+			if err != nil {
+				t.Fatalf("CreateSiteResource: %v", err)
+			}
+			if body["tcpPortRangeString"] != "8123" {
+				t.Errorf("tcpPortRangeString = %v, want 8123", body["tcpPortRangeString"])
+			}
+			got, present := body["udpPortRangeString"]
+			if tc.wantUDP == nil {
+				if present {
+					t.Errorf("udpPortRangeString should be omitted, got %v", got)
+				}
+			} else if !present || got != tc.wantUDP {
+				t.Errorf("udpPortRangeString = %v (present %v), want %q", got, present, tc.wantUDP)
+			}
+		})
 	}
 }
