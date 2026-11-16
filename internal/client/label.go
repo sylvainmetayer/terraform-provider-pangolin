@@ -122,7 +122,11 @@ func listOrgQuery[T any](ctx context.Context, c *Client, route, query, key strin
 		items = append(items, item)
 		return false, nil
 	})
-	return items, err
+	if err != nil {
+		// No partial list: callers would read it as the whole org.
+		return nil, err
+	}
+	return items, nil
 }
 
 // GetLabel finds a label by ID. The API has no route for a single label, so
